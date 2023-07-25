@@ -37,7 +37,21 @@ python rtsp_scanner.py [--start_search | --start_check] \
 - `--test_sleep TEST_SLEEP` Test cameras in the local database every N seconds. (Default: 30)
 - `--db_sleep DB_SLEEP` Update the local database with Shodan results every N seconds. (Default: 86400, i.e., 1 day)
 - `--users USERS_FILE` Path to the file containing user names. (Default: 'users_small.txt')
+  - The format of the file should be as follows:
+    ```
+    admin
+    root
+    ...
+    ```
+    - The `{}` will be replaced with a random user name.
 - `--passwords PASSWORDS_FILE` Path to the file containing passwords. (Default: 'passwords_small.txt')
+  - The format of the file should be as follows:
+    ```
+    password
+    123456
+    ...
+    ```
+    - The `{}` will be replaced with a random password.
 - `--rtsp_urls RTSP_URLS_FILE`
   - Path to the file containing RTSP URLs. (Default: 'rtsp_urls_small.txt')
   - The format of the file should be as follows:
