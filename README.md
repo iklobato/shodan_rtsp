@@ -54,11 +54,25 @@ python rtsp_scanner.py [--start_search | --start_check] \
 - `-v`, `--verbose` Enable verbose mode.
 
 ### TODO
-- [x] Add more cameras to the local database.
-- [x] Add more usernames and passwords to the files.
-- [x] Add more RTSP URLs to the file.
-- [ ] Database class creation, to deal with the database.
-- [ ] Database class encapsulate the database queries.
-- [ ] Make it into a python package and upload it to PyPI.
-- [ ] Dockerize the application.
-- [ ] Setup architecture to run the application in the cloud.
+- General:
+  - [ ] Make the script more modular, solid concepts, and better code.
+  - [ ] Reduce the number of arguments and make the script more user friendly.
+- Local changes:
+  - [x] Add more cameras to the local database.
+  - [x] Add more usernames and passwords to the files.
+  - [x] Add more RTSP URLs to the file.
+- Database
+  - [ ] Database class creation, to deal with the database.
+  - [ ] Database class encapsulate the database queries.
+  - [ ] Make database class thread safe and add a lock to it.
+- Usability:
+  - [ ] Make it into a python package and upload it to PyPI.
+  - [ ] Create a CLI for the script.
+- Architecture:
+  - [ ] Dockerize the application.
+  - [ ] Setup architecture to run the application in the cloud.
+- Integrations:
+  - [ ] Add integration with Telegram.
+  - [ ] Add integration with Discord.
+  - [ ] Add integration with Slack.
+  - [ ] Add integration with Twitter.
