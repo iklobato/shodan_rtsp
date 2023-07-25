@@ -1,3 +1,4 @@
+<img src="https://github.com/henriqueblobato/shodan_rtsp/assets/18133417/b2fd3f57-89c8-454f-9afc-e28d040f91dc" width="200"/>
 
 # RTSP Scanner
 This is a Python script that allows you to scan for cameras using the Real Time Streaming Protocol (RTSP) on Shodan and test them against a local database. The script offers options to customize the scanning process according to your preferences.
