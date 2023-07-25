@@ -5,6 +5,9 @@ This is a Python script that allows you to scan for cameras using the Real Time 
 It will also save the results of the scan in a local database, so that you can test the cameras later without having to scan for them again.
 This local database its used to avoid scanning the same cameras over and over again, and also to be used to check for cameras credentials that you already have.
 
+### Frames folder
+All the frames captured by the cameras will be saved in the `frames` folder. The folder will be created automatically if it doesn't exist.
+
 ### Requirements installation
 ```bash
 pip install -r requirements.txt
