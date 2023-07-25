@@ -98,3 +98,4 @@ python rtsp_scanner.py [--start_search | --start_check] \
   - [ ] Add integration with Twitter.
 - Interface
   - [ ] Create a web interface for the application.
+    - Fast options to use: streamlit
