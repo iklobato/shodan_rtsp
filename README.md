@@ -9,7 +9,13 @@ This local database its used to avoid scanning the same cameras over and over ag
 pip install -r requirements.txt
 ```
 
-- ### Usage
+### Environment file
+Edit the `.env` file and add your Shodan API key and database password.
+```bash
+SHODAN_KEY=<your_shodan_api_key>
+```
+
+### Usage
 To use the RTSP Scanner, run the following command:
 ```bash
 python rtsp_scanner.py [--start_search | --start_check] \
