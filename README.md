@@ -73,7 +73,7 @@ python rtsp_scanner.py [--start_search | --start_check] \
 
 ### TODO
 - General:
-  - [ ] Add log level as an argument as -v 1, -v 2 and -v 3 
+  - [ ] Add log level as an argument as -v1, -v2 and -v 3 
   - [ ] Make the script more modular, solid concepts, and better code.
   - [ ] Reduce the number of arguments and make the script more user-friendly.
   - [ ] SOLID principles to make the code more maintainable.
