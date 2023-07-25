@@ -17,6 +17,8 @@ from dotenv import load_dotenv
 from shodan.helpers import get_screenshot
 
 
+__version__ = '0.1.0'
+
 load_dotenv()
 
 logging.basicConfig(
