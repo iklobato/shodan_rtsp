@@ -100,3 +100,4 @@ python rtsp_scanner.py [--start_search | --start_check] \
   - [ ] Create a web interface for the application.
     - Fast options to use: streamlit
   - [ ] Users with login managed by the application.
+  - [ ] Users can add their own cameras to the database.
