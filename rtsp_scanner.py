@@ -125,7 +125,7 @@ def write_image_to_file(ss, h, p):
 
 def check_rtsp_connection_by_host(host, port, user, password, rtsp_string):
     rtsp_url = rtsp_string.format(user, password, host, port)
-    logging.info(f'{rtsp_url}')
+    logging.debug(f'{rtsp_url}')
     vcap = cv2.VideoCapture(rtsp_url)
     try:
         ret, frame = vcap.read()
