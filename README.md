@@ -52,3 +52,13 @@ python rtsp_scanner.py [--start_search | --start_check] \
 - `--random` Randomize users, passwords, and RTSP URLs. (Default: True)
 - `--db_name DB_NAME` Name of the local database. (Default: 'rtsp_scanner.db')
 - `-v`, `--verbose` Enable verbose mode.
+
+### TODO
+- [x] Add more cameras to the local database.
+- [x] Add more usernames and passwords to the files.
+- [x] Add more RTSP URLs to the file.
+- [ ] Database class creation, to deal with the database.
+- [ ] Database class encapsulate the database queries.
+- [ ] Make it into a python package and upload it to PyPI.
+- [ ] Dockerize the application.
+- [ ] Setup architecture to run the application in the cloud.
