@@ -4,7 +4,6 @@ import os
 import random
 import socket
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pprint import pprint
 from threading import Thread
 from time import sleep
