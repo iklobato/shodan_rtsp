@@ -203,26 +203,44 @@ def thread_test_cameras(executor_threads, timeout, users_wordlist, passwords_wor
     logging.info(f'Executors: finished in thread_test_cameras')
 
 
-def thread_test_single_camera():
-    ...
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
 
-
-if __name__ == '__main__':
-
-    argparse = argparse.ArgumentParser()
-    group = argparse.add_mutually_exclusive_group(required=True)
+    group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--start_search', action='store_true', help='Start searching for cameras on Shodan', default=False)
     group.add_argument('--start_check', action='store_true', help='Start testing cameras on DB', default=False)
-    argparse.add_argument('--threads', action='store', help='Number of threads to check cams', default=1, type=int)
-    argparse.add_argument('--test_sleep', action='store', help='Test cameras in DB every N seconds', default=30, type=int)
-    argparse.add_argument('--db_sleep', action='store', help='Update DB with Shodan every N seconds', default=60 * 60 * 24, type=int)  # 1 day
-    argparse.add_argument('--users', action='store', help='Path to users file', default='users_small.txt')
-    argparse.add_argument('--passwords', action='store', help='Path to passwords file', default='passwords_small.txt')
-    argparse.add_argument('--rtsp_urls', action='store', help='Path to rtsp urls file', default='rtsp_urls_small.txt')
-    argparse.add_argument('--random', action='store_true', help='Randomize users, passwords and rtsp urls', default=True)
-    argparse.add_argument('--db_name', action='store', help='Name of the database', default='rtsp_scanner.db')
-    argparse.add_argument('-v', '--verbose', action='store_true', help='Verbose mode', default=False)
-    args = argparse.parse_args()
+
+    parser.add_argument('--threads', action='store', help='Number of threads to check cams', default=1, type=int)
+    parser.add_argument('--test_sleep', action='store', help='Test cameras in DB every N seconds', default=30, type=int)
+    parser.add_argument('--db_sleep', action='store', help='Update DB with Shodan every N seconds', default=60 * 60 * 24, type=int)  # 1 day
+    parser.add_argument('--users', action='store', help='Path to users file', default='users_small.txt')
+    parser.add_argument('--passwords', action='store', help='Path to passwords file', default='passwords_small.txt')
+    parser.add_argument('--rtsp_urls', action='store', help='Path to rtsp urls file', default='rtsp_urls_small.txt')
+    parser.add_argument('--random', action='store_true', help='Randomize users, passwords and rtsp urls', default=True)
+    parser.add_argument('--db_name', action='store', help='Name of the database', default='rtsp_scanner.db')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode', default=False)
+
+    def check_paths(args):
+        if not os.path.exists(args.users):
+            parser.error(f'Users file "{args.users}" not found')
+            return False
+        if not os.path.exists(args.passwords):
+            parser.error(f'Passwords file "{args.passwords}" not found')
+            return False
+        if not os.path.exists(args.rtsp_urls):
+            parser.error(f'RTSP URLs file "{args.rtsp_urls}" not found')
+            return False
+        return True
+
+    if check_paths(parser.parse_args()):
+        return parser.parse_args()
+
+    raise Exception('Error parsing arguments')
+
+
+def main():
+
+    args = parse_arguments()
 
     db_name = args.db_name
     if not os.path.exists(db_name):
@@ -239,32 +257,32 @@ if __name__ == '__main__':
 
     arg_random = args.random
 
-    pprint({
-        'threads': arg_threads,
-        'test_timeout': arg_test_timeout,
-        'db_timeout': arg_db_timeout,
-        'users': {
+    verbose = args.verbose
+    if verbose:
+        logging.basicConfig(level=logging.DEBUG)
+        logging.info('Verbose mode enabled')
+        args_data = vars(args)
+        args_data['users'] = {
             'path': wd_users,
             'count': len(open(wd_users, 'r').read().splitlines())
-        },
-        'passwords': {
+        }
+        args_data['passwords'] = {
             'path': wd_passwords,
             'count': len(open(wd_passwords, 'r').read().splitlines())
-        },
-        'rtsp_urls': {
+        }
+        args_data['rtsp_urls'] = {
             'path': wd_rtsp_urls,
             'count': len(open(wd_rtsp_urls, 'r').read().splitlines())
-        },
-        'random': arg_random,
-        'db_name': db_name,
-    }, indent=4)
+        }
+        pprint(args_data, indent=4)
 
-    start_search_thread = args.start_search
-    start_check_thread = args.start_check
-
-    if start_search_thread:
+    if args.start_search:
         thread_db = Thread(target=thread_add_cameras_on_db, args=(arg_db_timeout,))
         thread_db.start()
 
-    if start_check_thread:
+    if args.start_check:
         thread_test_cameras(arg_threads, arg_test_timeout, wd_users, wd_passwords, wd_rtsp_urls, arg_random)
+
+
+if __name__ == '__main__':
+    main()
