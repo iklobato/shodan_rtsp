@@ -99,3 +99,4 @@ python rtsp_scanner.py [--start_search | --start_check] \
 - Interface
   - [ ] Create a web interface for the application.
     - Fast options to use: streamlit
+  - [ ] Users with login managed by the application.
