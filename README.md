@@ -74,7 +74,8 @@ python rtsp_scanner.py [--start_search | --start_check] \
 ### TODO
 - General:
   - [ ] Make the script more modular, solid concepts, and better code.
-  - [ ] Reduce the number of arguments and make the script more user friendly.
+  - [ ] Reduce the number of arguments and make the script more user-friendly.
+  - [ ] SOLID principles to make the code more maintainable.
 - Local changes:
   - [x] Add more cameras to the local database.
   - [x] Add more usernames and passwords to the files.
@@ -94,3 +95,5 @@ python rtsp_scanner.py [--start_search | --start_check] \
   - [ ] Add integration with Discord.
   - [ ] Add integration with Slack.
   - [ ] Add integration with Twitter.
+- Interface
+  - [ ] Create a web interface for the application.
