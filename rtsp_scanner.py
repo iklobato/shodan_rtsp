@@ -237,6 +237,7 @@ def parse_arguments() -> argparse.Namespace:
         if not os.path.exists(args.db_name):
             logging.info(f'Database "{args.db_name}" not found, creating now')
             create_db()
+            migrate_fields_table_db()
         if not os.path.exists('frames'):
             logging.info(f'Frames folder not found, creating now')
             os.mkdir('images')
