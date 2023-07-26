@@ -155,7 +155,8 @@ def thread_add_cameras_on_db(shodan_key=None):
     else:
         logging.debug(f'Starting thread_add_cameras_on_db using key from env')
         shodan_key = os.getenv('SHODAN_KEY')
-    query = 'country:BR cam has_screenshot:true'
+    # query = 'country:BR cam has_screenshot:true'
+    query = 'screenshot.label:webcam,cam country:BR'
     logging.debug(f'Starting thread_add_cameras_on_db using query "{query}"')
     api = shodan.Shodan(shodan_key)
     results = api.search_cursor(query)
