@@ -10,6 +10,7 @@ import cv2
 import psycopg2
 import shodan
 from dotenv import load_dotenv
+from shodan import APIError
 
 from shodan.helpers import get_screenshot
 
@@ -164,23 +165,29 @@ def thread_add_cameras_on_db(shodan_key=None):
 
     logging.info('Updating database')
     cams_added = 0
-    for banner in results:
-        ip, port = banner.get('ip_str'), banner.get('port')
-        db_response = db.search_on_db(ip, port)
-        if db_response:
-            logging.debug(f'{ip}:{port} skipped')
-        else:
-            city = banner.get('location').get('city')
-            country_code = banner.get('location').get('country_code')
-            db.insert_into_cameras(ip, port, '.', '.', '.', city, country_code)
-            logging.debug(f'{ip}:{port} added')
-            cams_added += 1
-        if banner.get('screenshot'):
-            screenshot = get_screenshot(banner)
-            write_image_to_file(screenshot, ip, port)
-    logging.info(f'{cams_added} cameras added')
-    return cams_added
-
+    try:
+        for banner in results:
+            ip, port = banner.get('ip_str'), banner.get('port')
+            db_response = db.search_on_db(ip, port)
+            if db_response:
+                logging.debug(f'{ip}:{port} skipped')
+            else:
+                city = banner.get('location').get('city')
+                country_code = banner.get('location').get('country_code')
+                db.insert_into_cameras(ip, port, '.', '.', '.', city, country_code)
+                logging.debug(f'{ip}:{port} added')
+                cams_added += 1
+            if banner.get('screenshot'):
+                screenshot = get_screenshot(banner)
+                write_image_to_file(screenshot, ip, port)
+        logging.info(f'{cams_added} cameras added')
+        return cams_added
+    except APIError as e:
+        logging.error(f'Shodan api error: {e}')
+        return cams_added
+    except Exception as e:
+        logging.error(f'Error: {e}')
+        return cams_added
 
 def thread_test_cameras(users_wordlist, passwords_wordlist, rtsp_urls_wordlist, randomize):
     logging.info(f'Starting thread_test_cameras')
