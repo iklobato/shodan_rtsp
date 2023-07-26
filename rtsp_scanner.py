@@ -38,7 +38,7 @@ class Singleton(type):
         return cls._instances[cls]
 
 
-class DatabaseConnector:
+class DatabaseConnector(metaclass=Singleton):
 
     def __init__(self):
         try:

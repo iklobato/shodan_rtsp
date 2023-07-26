@@ -24,16 +24,16 @@ def get_remote_ip() -> str:
     except Exception as e:
         return None
 
-    return session_info.request.remote_ip
+    return session_info.request
 
 
 def main():
 
     st.title("Brazil open cameras")
-    # user_ip = get_remote_ip()
-    # st.write(f"Your IP: {user_ip}")
-    # proint = st.empty()
-    # print(user_ip)
+    user_info = get_remote_ip()
+    ua = dict(user_info.headers).get('User-Agent')
+    user_ip = user_info.remote_ip
+    st.write(f"You are: {ua} at {user_ip}")
 
     user_input = st.text_input("Add your shodan key to perform a live search", "")
 
