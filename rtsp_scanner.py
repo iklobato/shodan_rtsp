@@ -55,6 +55,7 @@ class DatabaseConnector(metaclass=Singleton):
             raise e
 
     def insert_into_cameras(self, ip, port, user, password, url, city, country_code):
+        city = city.replace("'", "").replace('"', '').replace(';', '')
         c = self.conn.cursor()
         c.execute(f'''
             INSERT INTO public.cameras (ip, port, "user", "password", url, active, city, country_code, added_at, updated_at, id) VALUES('{ip}', {port}, '{user}', '{password}', '{url}', 0, '{city}', '{country_code}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, DEFAULT);
