@@ -4,6 +4,13 @@
 This is a Python script that allows you to scan for cameras using the Real Time Streaming Protocol (RTSP) on Shodan and test them against a local database. The script offers options to customize the scanning process according to your preferences.
 It will also save the results of the scan in a local database, so that you can test the cameras later without having to scan for them again.
 This local database its used to avoid scanning the same cameras over and over again, and also to be used to check for cameras credentials that you already have.
+You can also start a streamlit server to check the results on a gui interface
+
+### Streamlit deployment
+![Screen Shot 2023-07-26 at 05 51 08](https://github.com/henriqueblobato/shodan_rtsp/assets/18133417/77ad3b8d-97ac-439e-b254-1fe9679760d2)
+![Screen Shot 2023-07-26 at 05 52 38](https://github.com/henriqueblobato/shodan_rtsp/assets/18133417/e38b85db-fff7-42d0-93f9-460016828490)
+
+
 
 ### Frames folder
 All the frames captured by the cameras will be saved in the `frames` folder. The folder will be created automatically if it doesn't exist.
