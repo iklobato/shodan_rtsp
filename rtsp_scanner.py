@@ -167,6 +167,7 @@ def thread_add_cameras_on_db(timeout):
     results = api.search_cursor(query)
 
     logging.info('Updating database')
+    cams_added = 0
     for banner in results:
         ip, port = banner.get('ip_str'), banner.get('port')
         db_response = search_on_db(ip, port)
@@ -176,11 +177,12 @@ def thread_add_cameras_on_db(timeout):
             city = banner.get('location').get('city')
             country_code = banner.get('location').get('country_code')
             insert_into_db(ip, port, '.', '.', '.', city, country_code)
-            logging.info(f'{ip}:{port} added')
+            logging.debug(f'{ip}:{port} added')
+            cams_added += 1
         if banner.get('screenshot'):
             screenshot = get_screenshot(banner)
             write_image_to_file(screenshot, ip, port)
-    logging.info(f'Waiting {timeout} seconds to update database')
+    logging.info(f'{cams_added} cameras added')
     sleep(timeout)
 
 
@@ -283,8 +285,7 @@ def main():
         pprint(args_data, indent=4)
 
     if args.start_search:
-        thread_db = Thread(target=thread_add_cameras_on_db, args=(arg_db_timeout,))
-        thread_db.start()
+        thread_add_cameras_on_db(arg_db_timeout)
 
     if args.start_check:
         thread_test_cameras(arg_threads, arg_test_timeout, wd_users, wd_passwords, wd_rtsp_urls, arg_random)
