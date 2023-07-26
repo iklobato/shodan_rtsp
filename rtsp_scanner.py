@@ -43,10 +43,12 @@ def migrate_fields_table_db():
     conn = sqlite3.connect('rtsp_scanner.db')
     c = conn.cursor()
     c.execute(
-        '''ALTER TABLE cameras ADD COLUMN city VARCHAR(255) DEFAULT '.'; '''.strip().replace('\n', ' ').replace('\t', ' ')
+        '''ALTER TABLE cameras ADD COLUMN city VARCHAR(255) DEFAULT '.'; '''.strip().replace('\n', ' ').replace('\t',
+                                                                                                                ' ')
     )
     c.execute(
-        '''ALTER TABLE cameras ADD COLUMN country_code VARCHAR(255) DEFAULT '.'; '''.strip().replace('\n', ' ').replace('\t', ' ')
+        '''ALTER TABLE cameras ADD COLUMN country_code VARCHAR(255) DEFAULT '.'; '''.strip().replace('\n', ' ').replace(
+            '\t', ' ')
     )
     conn.commit()
     conn.close()
@@ -71,6 +73,7 @@ def get_random_from_db():
     result = c.fetchall()
     conn.close()
     return result
+
 
 def get_from_db():
     conn = sqlite3.connect('rtsp_scanner.db')
@@ -120,6 +123,7 @@ def write_image_to_file(ss, h, p):
     mime = ss['mime'].split('/')[-1]
     with open(f'frames/{h}_{p}.{mime}', 'wb') as img:
         img.write(base64.b64decode(ss['data']))
+    logging.debug(f'Image saved to frames/{h}_{p}.{mime}')
 
 
 def check_rtsp_connection_by_host(host, port, user, password, rtsp_string):
@@ -158,7 +162,8 @@ def is_camera(host, port, path):
 
 
 def thread_add_cameras_on_db():
-    query = 'city:"Itatiba,Valinhos,Campinas" cam'
+    # query = 'city:"Itatiba,Valinhos,Campinas" cam'
+    query = 'country:BR cam'
     logging.debug(f'Starting thread_add_cameras_on_db using query "{query}"')
     api = shodan.Shodan(os.getenv('SHODAN_KEY'))
     results = api.search_cursor(query)
@@ -245,7 +250,6 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def main():
-
     args = parse_arguments()
 
     arg_threads = args.threads
