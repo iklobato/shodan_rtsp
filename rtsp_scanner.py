@@ -240,7 +240,7 @@ def parse_arguments() -> argparse.Namespace:
             migrate_fields_table_db()
         if not os.path.exists('frames'):
             logging.info(f'Frames folder not found, creating now')
-            os.mkdir('images')
+            os.mkdir('frames')
         return True
 
     if check_paths(parser.parse_args()):
