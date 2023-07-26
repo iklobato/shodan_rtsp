@@ -172,7 +172,7 @@ def thread_add_cameras_on_db(timeout):
         ip, port = banner.get('ip_str'), banner.get('port')
         db_response = search_on_db(ip, port)
         if db_response:
-            logging.info(f'{ip}:{port} skipped')
+            logging.debug(f'{ip}:{port} skipped')
         else:
             city = banner.get('location').get('city')
             country_code = banner.get('location').get('country_code')
