@@ -22,7 +22,7 @@ def list_images_in_folder(folder_path):
 
 
 def main():
-    st.title("Image Viewer App")
+    st.title("Brazil open cameras")
 
     folder_path = 'frames'
     current_full_path = os.path.dirname(os.path.abspath(__file__))
