@@ -160,9 +160,9 @@ def is_camera(host, port, path):
         return False
 
 
-def thread_add_cameras_on_db(timeout):
+def thread_add_cameras_on_db():
     query = 'city:"Itatiba,Valinhos,Campinas" cam'
-    logging.debug(f'Starting thread_add_cameras_on_db using query "{query}" with {timeout} seconds of timeout')
+    logging.debug(f'Starting thread_add_cameras_on_db using query "{query}"')
     api = shodan.Shodan(os.getenv('SHODAN_KEY'))
     results = api.search_cursor(query)
 
@@ -183,7 +183,6 @@ def thread_add_cameras_on_db(timeout):
             screenshot = get_screenshot(banner)
             write_image_to_file(screenshot, ip, port)
     logging.info(f'{cams_added} cameras added')
-    sleep(timeout)
 
 
 def thread_test_cameras(executor_threads, timeout, users_wordlist, passwords_wordlist, rtsp_urls_wordlist, randomize):
@@ -218,7 +217,6 @@ def parse_arguments() -> argparse.Namespace:
 
     parser.add_argument('--threads', action='store', help='Number of threads to check cams', default=1, type=int)
     parser.add_argument('--test_sleep', action='store', help='Test cameras in DB every N seconds', default=30, type=int)
-    parser.add_argument('--db_sleep', action='store', help='Update DB with Shodan every N seconds', default=60 * 60 * 24, type=int)  # 1 day
     parser.add_argument('--users', action='store', help='Path to users file', default='users_small.txt')
     parser.add_argument('--passwords', action='store', help='Path to passwords file', default='passwords_small.txt')
     parser.add_argument('--rtsp_urls', action='store', help='Path to rtsp urls file', default='rtsp_urls_small.txt')
@@ -257,7 +255,6 @@ def main():
 
     arg_threads = args.threads
     arg_test_timeout = args.test_sleep
-    arg_db_timeout = args.db_sleep
 
     wd_users = args.users
     wd_passwords = args.passwords
@@ -285,7 +282,7 @@ def main():
         pprint(args_data, indent=4)
 
     if args.start_search:
-        thread_add_cameras_on_db(arg_db_timeout)
+        thread_add_cameras_on_db()
 
     if args.start_check:
         thread_test_cameras(arg_threads, arg_test_timeout, wd_users, wd_passwords, wd_rtsp_urls, arg_random)
