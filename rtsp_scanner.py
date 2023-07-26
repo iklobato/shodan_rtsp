@@ -4,9 +4,6 @@ import os
 import random
 import socket
 import sqlite3
-from pprint import pprint
-from threading import Thread
-from time import sleep
 import logging
 
 import argparse as argparse
@@ -185,8 +182,8 @@ def thread_add_cameras_on_db():
     logging.info(f'{cams_added} cameras added')
 
 
-def thread_test_cameras(executor_threads, timeout, users_wordlist, passwords_wordlist, rtsp_urls_wordlist, randomize):
-    logging.info(f'Starting thread_test_cameras with {executor_threads} threads')
+def thread_test_cameras(users_wordlist, passwords_wordlist, rtsp_urls_wordlist, randomize):
+    logging.info(f'Starting thread_test_cameras')
 
     camera_users = open(users_wordlist, 'r').read().splitlines()
     camera_passwords = open(passwords_wordlist, 'r').read().splitlines()
@@ -197,7 +194,6 @@ def thread_test_cameras(executor_threads, timeout, users_wordlist, passwords_wor
         random.shuffle(camera_passwords)
         random.shuffle(rtsp_url_type)
 
-    logging.debug(f'Using {executor_threads} threads in thread_test_cameras')
     cameras = get_random_from_db()
     logging.debug(f'Testing {len(cameras)} cameras')
     camera_combinations = itertools.product(rtsp_url_type, camera_users, camera_passwords, cameras)
@@ -216,7 +212,6 @@ def parse_arguments() -> argparse.Namespace:
     group.add_argument('--start_check', action='store_true', help='Start testing cameras on DB', default=False)
 
     parser.add_argument('--threads', action='store', help='Number of threads to check cams', default=1, type=int)
-    parser.add_argument('--test_sleep', action='store', help='Test cameras in DB every N seconds', default=30, type=int)
     parser.add_argument('--users', action='store', help='Path to users file', default='users_small.txt')
     parser.add_argument('--passwords', action='store', help='Path to passwords file', default='passwords_small.txt')
     parser.add_argument('--rtsp_urls', action='store', help='Path to rtsp urls file', default='rtsp_urls_small.txt')
@@ -254,8 +249,6 @@ def main():
     args = parse_arguments()
 
     arg_threads = args.threads
-    arg_test_timeout = args.test_sleep
-
     wd_users = args.users
     wd_passwords = args.passwords
     wd_rtsp_urls = args.rtsp_urls
@@ -264,7 +257,7 @@ def main():
 
     verbose = args.verbose
     if verbose:
-        logging.basicConfig(level=logging.DEBUG)
+        logging.getLogger().setLevel(logging.DEBUG)
         logging.info('Verbose mode enabled')
         args_data = vars(args)
         args_data['users'] = {
@@ -279,13 +272,13 @@ def main():
             'path': wd_rtsp_urls,
             'count': len(open(wd_rtsp_urls, 'r').read().splitlines())
         }
-        pprint(args_data, indent=4)
+        logging.debug(args_data)
 
     if args.start_search:
         thread_add_cameras_on_db()
 
     if args.start_check:
-        thread_test_cameras(arg_threads, arg_test_timeout, wd_users, wd_passwords, wd_rtsp_urls, arg_random)
+        thread_test_cameras(wd_users, wd_passwords, wd_rtsp_urls, arg_random)
 
 
 if __name__ == '__main__':
