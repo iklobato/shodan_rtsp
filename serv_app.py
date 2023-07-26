@@ -1,18 +1,10 @@
-import sqlite3
-
 import streamlit as st
 import os
 
+from streamlit import runtime
+from streamlit.runtime.scriptrunner import get_script_run_ctx
 
-def search_on_db(ip, port):
-    conn = sqlite3.connect('rtsp_scanner.db')
-    c = conn.cursor()
-    c.execute('''
-        SELECT * FROM cameras WHERE ip = ? AND port = ?
-    '''.strip(), (ip, port))
-    result = c.fetchall()
-    conn.close()
-    return result
+from rtsp_scanner import DatabaseConnector, thread_add_cameras_on_db, db
 
 
 def list_images_in_folder(folder_path):
@@ -21,8 +13,33 @@ def list_images_in_folder(folder_path):
     return image_files
 
 
+def get_remote_ip() -> str:
+    try:
+        ctx = get_script_run_ctx()
+        if ctx is None:
+            return None
+        session_info = runtime.get_instance().get_client(ctx.session_id)
+        if session_info is None:
+            return None
+    except Exception as e:
+        return None
+
+    return session_info.request.remote_ip
+
+
 def main():
+
     st.title("Brazil open cameras")
+    # user_ip = get_remote_ip()
+    # st.write(f"Your IP: {user_ip}")
+    # proint = st.empty()
+    # print(user_ip)
+
+    user_input = st.text_input("Add your shodan key to perform a live search", "")
+
+    if user_input:
+        cams_found = thread_add_cameras_on_db(user_input)
+        st.write(cams_found)
 
     folder_path = 'frames'
     current_full_path = os.path.dirname(os.path.abspath(__file__))
@@ -36,15 +53,11 @@ def main():
     for im in image_files:
         ip, port = im.split('_')
         port = port.split('.')[0]
-        cam_info = search_on_db(ip, port)
-        cidade = cam_info[0][-2]
+        cam_info = db.search_on_db(ip, port)
+        if not cam_info:
+            continue
+        cidade = cam_info[0][6]
         st.image(os.path.join(folder_path, im), use_column_width=True, caption=cidade)
-        # st.columns([st.image(os.path.join(folder_path, im), use_column_width=True, caption=cidade)])
-
-    # image_path = os.path.join(folder_path, selected_image)
-    # image = Image.open(image_path)
-    #
-    # st.image(image, caption=selected_image, use_column_width=True)
 
 
 if __name__ == "__main__":
