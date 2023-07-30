@@ -50,13 +50,17 @@ def main():
         st.error("No images found in the selected folder.")
         return
 
+    ips_ports = set()
     for im in image_files:
         ip, port = im.split('_')
         port = port.split('.')[0]
+        ips_ports.add((ip, port))
+    for ip, port in ips_ports:
         cam_info = db.search_on_db(ip, port)
         if not cam_info:
             continue
         cidade = cam_info[0][6]
+        im = f"{ip}_{port}.jpg"
         st.image(os.path.join(folder_path, im), use_column_width=True, caption=cidade)
 
 
