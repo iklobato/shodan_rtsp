@@ -19,6 +19,7 @@ __version__ = '0.1.0'
 
 from models.camera import Camera
 from models.managers import CameraManager
+from nmap_scanner import NmapScanner
 
 load_dotenv()
 
@@ -46,48 +47,17 @@ def write_image_to_file(snapshot, host, port):
 def check_rtsp_connection_by_host(host, port, user, password, rtsp_string):
     rtsp_url = rtsp_string.format(user, password, host, port)
     logging.debug(f'{rtsp_url}')
-    vcap = cv2.VideoCapture(rtsp_url)
-    try:
+
+    with cv2.VideoCapture(rtsp_url) as vcap:
         ret, frame = vcap.read()
         if not ret:
             logging.debug(f'No frame for {rtsp_url}')
             return None
-        logging.info(f'[!!] Connected to camera with RTSP URL: {rtsp_url}, user: {user}, password: {password}')
+
+        logging.info(f'[!] {rtsp_url}, user: {user}, password: {password}')
         image_b64 = cv2.imencode('.jpg', frame)[1].tobytes()
-        camera_obj = Camera(
-            ip=host, port=port, user=user, password=password, url=rtsp_url, active=True, image_b64=image_b64
-        )
-        cam_db.update(camera_obj)
-        return rtsp_url
-    except Exception as e:
-        logging.error(f'Error: {e}')
-        return None
-    finally:
-        logging.debug(f'Releasing {rtsp_url}')
-        vcap.release()
 
-
-def check_rtsp_connection(host, port, rtsp_string):
-    rtsp_url = rtsp_string.format('', '', host, port)
-    rtsp_url = rtsp_url.replace('rtsp://:@', 'rtsp://')
-    logging.debug(f'{rtsp_url}')
-    vcap = cv2.VideoCapture(rtsp_url)
-    try:
-        ret, frame = vcap.read()
-        if not frame:
-            logging.debug(f'No frame for {rtsp_url}')
-            return None
-        logging.info(f'[!!] Connected to camera with RTSP URL: {rtsp_url}')
-        image_b64 = cv2.imencode('.jpg', frame)[1].tostring()
-        camera_obj = Camera(ip=host, port=port, url=rtsp_url, active=True, image_b64=image_b64)
-        cam_db.update(camera_obj)
-        return rtsp_url
-    except Exception as e:
-        logging.error(f'Error: {e}')
-        return None
-    finally:
-        logging.debug(f'Releasing {rtsp_url}')
-        vcap.release()
+        return Camera(ip=host, port=port, user=user, password=password, url=rtsp_url, active=True, image_b64=image_b64)
 
 
 def is_camera(host, port, path):
@@ -172,18 +142,33 @@ def thread_test_cameras(users_wordlist, passwords_wordlist, rtsp_urls_wordlist, 
     logging.info(f'Executors: finished in thread_test_cameras')
 
 
+def thread_nmap_scan(ip_range):
+    logging.info(f'Starting thread_nmap_scan')
+
+    scanner = NmapScanner()
+    hosts = scanner.scan(ip_range)
+
+    for h in hosts['scan']:
+        for port in hosts['scan'][h]['tcp']:
+            cam_db.insert_into_cameras(h, port, '.', '.', '.', '.', '.', '.', '.')
+            logging.info(f'Added on db {h}:{port}')
+    logging.info(f'Executors: finished in thread_nmap_scan')
+
+
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
 
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--start_search', action='store_true', help='Start searching for cameras on Shodan', default=False)
     group.add_argument('--start_check', action='store_true', help='Start testing cameras on DB', default=False)
+    group.add_argument('--start_nmap', action='store_true', help='Start nmap scan', default=False)
     parser.add_argument('--threads', action='store', help='Number of threads to check cams', default=1, type=int)
     parser.add_argument('--users', action='store', help='Path to users file', default='users_small.txt')
     parser.add_argument('--passwords', action='store', help='Path to passwords file', default='passwords_small.txt')
     parser.add_argument('--rtsp_urls', action='store', help='Path to rtsp urls file', default='rtsp_urls_small.txt')
     parser.add_argument('--random', action='store_true', help='Randomize users, passwords and rtsp urls', default=True)
     parser.add_argument('--db_name', action='store', help='Name of the database', default='rtsp_scanner.db')
+    parser.add_argument('--range', action='store', help='IP range to scan', default='200.128.0.0/9')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode', default=False)
 
     def check_paths(args):
@@ -240,6 +225,10 @@ def main():
 
     if args.start_check:
         thread_test_cameras(wd_users, wd_passwords, wd_rtsp_urls, arg_random)
+
+    if args.start_nmap:
+        range_to_scan = args.range
+        thread_nmap_scan(range_to_scan)
 
 
 if __name__ == '__main__':
