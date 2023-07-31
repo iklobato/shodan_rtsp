@@ -4,6 +4,7 @@ streamlit==1.25.0
 streamlit==1.25.0
 opencv-python-headless==4.8.0.74
 psycopg2-binary==2.9.1
+psycopg2
 python-nmap==0.7.1
 SQLAlchemy==2.0.19
 
