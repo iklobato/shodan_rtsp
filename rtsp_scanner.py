@@ -17,6 +17,7 @@ from shodan.helpers import get_screenshot
 
 __version__ = '0.1.0'
 
+from models.camera import Camera
 from models.managers import CameraManager
 
 load_dotenv()
@@ -30,26 +31,16 @@ logging.basicConfig(
     ]
 )
 
-
-class Singleton(type):
-    _instances = {}
-
-    def __call__(cls, *args, **kwargs):
-        logging.info('Singleton call')
-        if cls not in cls._instances:
-            logging.info('Singleton call if')
-            cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
-        return cls._instances[cls]
-
-
 cam_db = CameraManager()
 
 
-def write_image_to_file(ss, h, p):
-    mime = ss['mime'].split('/')[-1]
-    with open(f'frames/{h}_{p}.{mime}', 'wb') as img:
-        img.write(base64.b64decode(ss['data']))
-    logging.debug(f'Image saved to frames/{h}_{p}.{mime}')
+def write_image_to_file(snapshot, host, port):
+    mime_type = snapshot['mime'].split('/')[-1]
+    file_path = os.path.join('frames', f'{host}_{port}.{mime_type}')
+    with open(file_path, 'wb') as image_file:
+        image_data = base64.b64decode(snapshot['data'])
+        image_file.write(image_data)
+    logging.debug(f'Image saved to {file_path}')
 
 
 def check_rtsp_connection_by_host(host, port, user, password, rtsp_string):
@@ -62,7 +53,11 @@ def check_rtsp_connection_by_host(host, port, user, password, rtsp_string):
             logging.debug(f'No frame for {rtsp_url}')
             return None
         logging.info(f'[!!] Connected to camera with RTSP URL: {rtsp_url}, user: {user}, password: {password}')
-        cam_db.update_from_db_values(host, port, user, password, rtsp_url, 1)
+        image_b64 = cv2.imencode('.jpg', frame)[1].tobytes()
+        camera_obj = Camera(
+            ip=host, port=port, user=user, password=password, url=rtsp_url, active=True, image_b64=image_b64
+        )
+        cam_db.update(camera_obj)
         return rtsp_url
     except Exception as e:
         logging.error(f'Error: {e}')
@@ -83,7 +78,9 @@ def check_rtsp_connection(host, port, rtsp_string):
             logging.debug(f'No frame for {rtsp_url}')
             return None
         logging.info(f'[!!] Connected to camera with RTSP URL: {rtsp_url}')
-        cam_db.update_from_db_values(host, port, None, None, rtsp_url, 1)
+        image_b64 = cv2.imencode('.jpg', frame)[1].tostring()
+        camera_obj = Camera(ip=host, port=port, url=rtsp_url, active=True, image_b64=image_b64)
+        cam_db.update(camera_obj)
         return rtsp_url
     except Exception as e:
         logging.error(f'Error: {e}')

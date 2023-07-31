@@ -51,31 +51,15 @@ class Camera(DatabaseConnection.base()):
     user = Column(String)
     password = Column(String)
     url = Column(String)
-    active = Column(Integer)
+    active = Column(Boolean)
     city = Column(String)
     country_code = Column(String)
     country_name = Column(String)
     region_code = Column(String)
+    image_b64 = Column(String)
     added_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def __repr__(self):
         return f'<Camera {self.ip}:{self.port} ({self.city}, {self.country_code}) - {self.active}>'
 
-
-if __name__ == '__main__':
-
-    db_connection = DatabaseConnection()
-
-    # with db_connection.session as session:
-    #     new_camera = Camera(
-    #         ip='192.168.0.3', port=8080, user='admin', password='password', url='rtsp://example.com/camera3', active=1,
-    #         city='New City', country_code='CA', country_name='Canada', region_code='ON'
-    #     )
-    #     session.add(new_camera)
-    #     session.commit()
-
-    with db_connection.session as session:
-        query_result = session.query(Camera).all()
-        for camera in query_result:
-            print(camera)

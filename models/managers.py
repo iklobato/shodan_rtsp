@@ -17,11 +17,11 @@ class CameraManager(DatabaseConnection):
 
     def get_random_from_db(self):
         with self.session as session:
-            return session.query(Camera).filter(Camera.active == 0).order_by(func.random()).all()
+            return session.query(Camera).filter(Camera.active == False).order_by(func.random()).all()
 
     def get_from_db(self):
         with self.session as session:
-            return session.query(Camera).filter(Camera.active == 0).all()
+            return session.query(Camera).filter(Camera.active == False).all()
 
     def search_on_db(self, ip, port):
         with self.session as session:
@@ -33,10 +33,22 @@ class CameraManager(DatabaseConnection):
             if not camera:
                 logging.debug(f'Camera {ip}:{port} not found')
                 return False
-            camera.active = 1
+            camera.active = True
             session.commit()
             logging.debug(f'Updated {ip}:{port} to active')
             return True
+
+    def update(self, camera):
+        with self.session as session:
+            db_cam = session.query(Camera).filter(Camera.ip == camera.ip, Camera.port == camera.port).first()
+            if db_cam:
+                for key, value in camera.__dict__.items():
+                    if key in db_cam.__dict__:
+                        setattr(db_cam, key, value)
+                session.commit()
+                logging.debug(f'Updated {camera.ip}:{camera.port}')
+            else:
+                logging.warning(f'Camera {camera.ip}:{camera.port} not found in the database.')
 
     def update_from_db_values(self, host, port, user, password, rtsp_string, active):
         with self.session as session:
