@@ -38,13 +38,13 @@ class CameraManager(DatabaseConnection):
             logging.debug(f'Updated {ip}:{port} to active')
             return True
 
-    def update(self, camera):
+    def set_active(self, camera):
         with self.session as session:
             db_cam = session.query(Camera).filter(Camera.ip == camera.ip, Camera.port == camera.port).first()
             if db_cam:
-                for key, value in camera.__dict__.items():
-                    if key in db_cam.__dict__:
-                        setattr(db_cam, key, value)
+                db_cam.active = True
+                db_cam.url = camera.url
+                db_cam.image_b64 = camera.image_b64
                 session.commit()
                 logging.debug(f'Updated {camera.ip}:{camera.port}')
             else:
@@ -60,3 +60,7 @@ class CameraManager(DatabaseConnection):
                 camera.active = active
                 session.commit()
                 logging.debug(f'Updated {host}:{port} with {user}:{password} and {rtsp_string}')
+
+    def get_all_images_from_db(self):
+        with self.session as session:
+            return session.query(Camera).filter(Camera.active == True).all()
