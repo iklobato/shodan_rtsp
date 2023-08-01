@@ -17,8 +17,8 @@ https://shodanrtsp-oxee2uql3oo.streamlit.app/
 1. Clone this repository to your local machine:
 
    ```bash
-   git clone https://github.com/your_username/camera-scanner.git
-   cd camera-scanner
+   git clone https://github.com/henriqueblobato/shodan_rtsp
+   cd shodan_rtsp
    ```
 
 2. Install the required dependencies:
