@@ -32,7 +32,7 @@ https://shodanrtsp-oxee2uql3oo.streamlit.app/
 To run the Camera Scanner, use the following command-line arguments:
 
 ```bash
-python camera_scanner.py [--start_search | --start_check | --start_nmap] [--config CONFIG] [-v]
+python main.py [--start_search | --start_check | --start_nmap] [--config CONFIG] [-v]
 ```
 
 ### Command-line Arguments:
