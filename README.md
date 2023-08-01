@@ -1,5 +1,3 @@
-<img src="https://github.com/henriqueblobato/shodan_rtsp/assets/18133417/b2fd3f57-89c8-454f-9afc-e28d040f91dc" width="200"/>
-
 # Camera Scanner
 
 The Camera Scanner is a Python command-line tool that allows you to search for and test cameras on various sources like Shodan and through Nmap scanning. It is designed to help identify cameras that may be publicly accessible or vulnerable to potential security issues.
