@@ -165,5 +165,7 @@ class CheckTask(Task):
             ip = camera.ip
             port = camera.port
             url_login = url.format(user, password, ip, port)
-            self.check_rtsp_connection_by_host(host=ip, port=port, user=user, password=password, rtsp_string=url_login)
+            connected = self.check_rtsp_connection_by_host(host=ip, port=port, user=user, password=password, rtsp_string=url_login)
+            if connected:
+                self.db_manager.set_active(connected)
         logging.info(f'Executors: finished in thread_test_cameras')
