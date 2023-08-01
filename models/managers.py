@@ -50,17 +50,6 @@ class CameraManager(DatabaseConnection):
             else:
                 logging.warning(f'Camera {camera.ip}:{camera.port} not found in the database.')
 
-    def update_from_db_values(self, host, port, user, password, rtsp_string, active):
-        with self.session as session:
-            camera = session.query(Camera).filter(Camera.ip == host, Camera.port == port).first()
-            if camera:
-                camera.user = user
-                camera.password = password
-                camera.url = rtsp_string
-                camera.active = active
-                session.commit()
-                logging.debug(f'Updated {host}:{port} with {user}:{password} and {rtsp_string}')
-
     def get_all_images_from_db(self):
         with self.session as session:
             return session.query(Camera).filter(Camera.active == True).all()

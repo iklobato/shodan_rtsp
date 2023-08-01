@@ -14,7 +14,7 @@ class DatabaseConnectionSingleton(type):
 
     def __call__(cls, *args, **kwargs):
         if cls not in cls._instances:
-            logging.info('Singleton call if')
+            logging.debug('Singleton call if')
             cls._instances[cls] = super(DatabaseConnectionSingleton, cls).__call__(*args, **kwargs)
         return cls._instances[cls]
 
