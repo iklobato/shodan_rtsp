@@ -7,10 +7,10 @@ from models.camera import Camera, DatabaseConnection
 
 class CameraManager(DatabaseConnection):
 
-    def insert_into_cameras(self, ip, port, user, password, url, city, country_code, country_name, region_code):
+    def insert_into_cameras(self, **kwargs):
+        city = kwargs.get('city')
         city = city.replace("'", "").replace('"', '').replace(';', '')
-        camera = Camera(ip=ip, port=port, user=user, password=password, url=url, active=False,
-                        city=city, country_code=country_code, country_name=country_name, region_code=region_code)
+        camera = Camera(**kwargs, city=city)
         with self.session as session:
             session.add(camera)
             session.commit()
