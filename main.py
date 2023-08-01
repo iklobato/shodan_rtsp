@@ -42,6 +42,10 @@ def load_config(config_file):
 def main():
     args = parse_args()
 
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.info('Verbose mode enabled')
+
     config = load_config(args.config)
     settings = {**config, **vars(args)}
 
