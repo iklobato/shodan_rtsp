@@ -16,17 +16,19 @@ __version__ = '0.1.0'
 
 from models.camera import Camera
 from models.managers import CameraManager
+from wordlists.proxy_downloader import ProxyDownloader
 
 
 class Task(ABC):
     """
     Abstract class for tasks, need implement run method
     """
-    def __init__(self, config: configparser.SectionProxy):
+    def __init__(self, config: configparser.SectionProxy, proxy_downloader: ProxyDownloader):
         if not config:
             raise ValueError('Config dict is required')
         self.config = self.parse_parameters(config)
         self.db_manager = CameraManager()
+        self.proxy_downloader = proxy_downloader
 
     @abstractmethod
     def run(self):
@@ -100,7 +102,9 @@ class NmapTask(Task):
         logging.info(f'Executors: finished in thread_nmap_scan')
 
     def scan(self, target):
-        response = self.nm.scan(hosts=target, arguments='-p 80,554 -sV')
+        proxies = self.proxy_downloader.proxies
+        parsed_proxies = ','.join([f'{p["ip"]}:{p["port"]}' for p in proxies])
+        response = self.nm.scan(hosts=target, arguments=f'-p 554 -sV --proxies {parsed_proxies}')
         return response.get('scan')
 
 
@@ -165,7 +169,9 @@ class CheckTask(Task):
             ip = camera.ip
             port = camera.port
             url_login = url.format(user, password, ip, port)
-            connected = self.check_rtsp_connection_by_host(host=ip, port=port, user=user, password=password, rtsp_string=url_login)
+            connected = self.check_rtsp_connection_by_host(
+                host=ip, port=port, user=user, password=password, rtsp_string=url_login
+            )
             if connected:
                 self.db_manager.set_active(connected)
         logging.info(f'Executors: finished in thread_test_cameras')

@@ -9,6 +9,8 @@ from scanners.task import ShodanTask, CheckTask, NmapTask
 
 __version__ = '0.1.0'
 
+from wordlists.proxy_downloader import ProxyDownloader
+
 load_dotenv()
 
 logging.basicConfig(
@@ -28,6 +30,7 @@ def parse_args():
     group.add_argument('--start_check', action='store_true', help='Start testing cameras on DB')
     group.add_argument('--start_nmap', action='store_true', help='Start nmap scan')
     parser.add_argument('--config', action='store', help='Path to the configuration file', default='config.ini')
+    parser.add_argument('--proxy-file', action='store', help='Proxy file path', default='https://raw.githubusercontent.com/MatrixTM/MHDDoS/main/config.json')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode', default=False)
 
     return parser.parse_args()
@@ -41,6 +44,7 @@ def load_config(config_file):
 
 def main():
     args = parse_args()
+    proxy_downloader = ProxyDownloader(args.proxy_file)
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -51,17 +55,17 @@ def main():
 
     if args.start_search:
         shodan_config = settings.get('shodan_config')
-        shodan_searcher = ShodanTask(shodan_config)
+        shodan_searcher = ShodanTask(shodan_config, proxy_downloader)
         shodan_searcher.run()
 
     if args.start_check:
         checkers_config = settings.get('checkers_config')
-        checker = CheckTask(checkers_config)
+        checker = CheckTask(checkers_config, proxy_downloader)
         checker.run()
 
     if args.start_nmap:
         nmap_config = settings.get('nmap_config')
-        nmap_searcher = NmapTask(nmap_config)
+        nmap_searcher = NmapTask(nmap_config, proxy_downloader)
         nmap_searcher.run()
 
 

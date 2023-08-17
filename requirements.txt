@@ -8,3 +8,7 @@ psycopg2
 python-nmap==0.7.1
 SQLAlchemy==2.0.19
 
+
+requests~=2.31.0
+numpy~=1.24.4
+Pillow~=9.5.0
