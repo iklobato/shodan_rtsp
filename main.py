@@ -2,6 +2,8 @@ import logging
 from argparse import ArgumentParser
 from configparser import ConfigParser
 
+import models.db_init
+
 from dotenv import load_dotenv
 
 from scanners.task import ShodanTask, CheckTask, NmapTask

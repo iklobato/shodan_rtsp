@@ -10,7 +10,7 @@ class CameraManager(DatabaseConnection):
     def insert_into_cameras(self, **kwargs):
         city = kwargs.get('city')
         city = city.replace("'", "").replace('"', '').replace(';', '')
-        camera = Camera(**kwargs, city=city)
+        camera = Camera(**kwargs)
         with self.session as session:
             session.add(camera)
             session.commit()

@@ -63,3 +63,6 @@ class Camera(DatabaseConnection.base()):
     def __repr__(self):
         return f'<Camera {self.ip}:{self.port} ({self.city}, {self.country_code}) - {self.active}>'
 
+        # FORCE TABLE CREATION (temporary fix)
+        _db = DatabaseConnection()
+        Camera.__table__.create(_db.engine, checkfirst=True)
