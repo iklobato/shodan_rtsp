@@ -6,9 +6,10 @@ IPv4 must be added to the account whitelist in the 2captcha web dashboard first
 that connects with no credentials from that IP.
 
 Login mode: username:password@host:port, where the username is read from the API
-and the host/port/password come from the dashboard (env-configured).
+and the host/port/password come from the dashboard (config-provided).
 
-Run `python -m scanners.proxy` to generate a proxy and print the exit IP.
+Config comes from config.yaml (see scanners/config.py). Run
+`python -m scanners.proxy` to generate a proxy and print the exit IP.
 """
 
 import importlib.util
@@ -21,7 +22,7 @@ from http.client import HTTPConnection, HTTPSConnection
 from ssl import SSLContext, create_default_context
 from typing import Protocol
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from scanners.config import ProxyConfig, get_config
 
 _API = "https://api.2captcha.com"
 _IP_ECHO = "https://api.ipify.org"
@@ -68,29 +69,16 @@ def requests_proxies(proxy_url: str) -> dict:
     return {"http": proxy_url, "https": proxy_url}
 
 
-class TwoCaptchaSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-
-    proxy_2captcha_aip_token: str
-    auth_mode: str = "whitelist"  # 'whitelist' | 'login'
-    protocol: str = "http"  # http | https | socks5
-    country: str = "us"  # exit country code; BR is not offered by 2captcha
-    public_ip: str = ""  # whitelist mode; auto-detected when empty
-    gateway_host: str = ""  # login mode (from dashboard)
-    gateway_port: int = 0  # login mode (from dashboard)
-    gateway_password: str = ""  # login mode (from dashboard)
-
-
 class TwoCaptchaProxy:
-    """Resolves a proxy URL from the 2captcha API, self-configured from settings."""
+    """Resolves a proxy URL from the 2captcha API, configured from ProxyConfig."""
 
     def __init__(
         self,
-        settings: TwoCaptchaSettings = None,
+        config: ProxyConfig = None,
         http_get_json=None,
         http_get_text=None,
     ):
-        self._s = settings or TwoCaptchaSettings()
+        self._s = config or get_config().proxy
         self._get_json = http_get_json or self._default_get_json
         self._get_text = http_get_text or self._default_get_text
         self._cached_url = None
@@ -162,7 +150,7 @@ class TwoCaptchaProxy:
         raise RuntimeError(f"no usable proxy in 2captcha reply: {data}")
 
     def _api(self, path: str, **params) -> dict:
-        params["key"] = self._s.proxy_2captcha_aip_token
+        params["key"] = self._s.token
         return self._get_json(f"{_API}{path}?{urllib.parse.urlencode(params)}")
 
     @staticmethod

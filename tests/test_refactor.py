@@ -15,13 +15,12 @@ from sqlalchemy.pool import StaticPool
 
 from models.camera import Base, Camera
 from models.managers import CameraRepository
-from scanners.config import CheckersConfig
+from scanners.config import CheckersConfig, ProxyConfig, load_config
 from scanners.proxy import (
     AnonymousProxyClient,
     ConnectFetcher,
     CurlFetcher,
     TwoCaptchaProxy,
-    TwoCaptchaSettings,
     requests_proxies,
 )
 from scanners.proxy_tunnel import ProxyTunnel, http_connect, socks5_connect
@@ -35,10 +34,8 @@ from scanners.rtsp_probe import (
 
 
 def _proxy(cached_url="http://78.141.222.54:15000", **overrides):
-    overrides.setdefault("protocol", "http")  # do not depend on the ambient .env
-    proxy = TwoCaptchaProxy(
-        settings=TwoCaptchaSettings(proxy_2captcha_aip_token="tok", **overrides)
-    )
+    overrides.setdefault("protocol", "http")
+    proxy = TwoCaptchaProxy(config=ProxyConfig(token="tok", **overrides))
     if cached_url is not None:
         proxy._cached_url = cached_url  # skip the network call in url()
     return proxy
@@ -66,9 +63,9 @@ def test_sanitize_city_strips_injection_chars():
 @pytest.mark.parametrize("value,expected", [("false", False), ("true", True)])
 def test_checkers_randomize_is_coerced_to_bool(value, expected):
     config = CheckersConfig(
-        wordlist_users="config.ini",
-        wordlist_passwords="config.ini",
-        wordlist_rtsp_urls="config.ini",
+        wordlist_users="requirements.txt",  # FilePath only checks existence
+        wordlist_passwords="requirements.txt",
+        wordlist_rtsp_urls="requirements.txt",
         randomize=value,
     )
     assert config.randomize is expected
@@ -403,3 +400,45 @@ def test_set_active_persists_credentials_into_columns():
 def test_set_active_returns_false_for_unknown_camera():
     repo = CameraRepository(database=_MemoryDatabase())
     assert repo.set_active(Camera(ip="9.9.9.9", port=1)) is False
+
+
+# --- centralised config (single config.yaml) ------------------------------
+
+
+def test_load_config_reads_all_sections(tmp_path):
+    wordlist = tmp_path / "wl.txt"
+    wordlist.write_text("admin\n")
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(f"""
+shodan:
+  api_key: SKEY
+checkers:
+  wordlist_users: {wordlist}
+  wordlist_passwords: {wordlist}
+  wordlist_rtsp_urls: {wordlist}
+  randomize: true
+nmap:
+  ip_range: 10.0.0.0/24
+proxy:
+  token: PTOKEN
+  protocol: socks5
+database:
+  user: u
+  password: p
+  host: h
+  db: d
+""")
+    config = load_config(str(cfg))
+    assert config.shodan.api_key == "SKEY"
+    assert config.shodan.query.startswith("screenshot.label")  # default applied
+    assert config.checkers.randomize is True
+    assert config.nmap.ip_range == "10.0.0.0/24"
+    assert config.proxy.protocol == "socks5"
+    assert config.database.dsn == "postgresql://u:p@h/d"
+
+
+def test_load_config_missing_required_field_fails_fast(tmp_path):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("shodan:\n  api_key: x\n")  # missing checkers/nmap/proxy/database
+    with pytest.raises(Exception):
+        load_config(str(cfg))

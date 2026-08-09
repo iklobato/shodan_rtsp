@@ -1,18 +1,13 @@
 import logging
 import os
 from argparse import ArgumentParser
-from configparser import ConfigParser
 
-from dotenv import load_dotenv
-
-from scanners.config import CheckersConfig, NmapConfig, ShodanConfig
-from scanners.proxy import TwoCaptchaProxy, TwoCaptchaSettings
+from scanners.config import AppConfig, load_config
+from scanners.proxy import TwoCaptchaProxy
 from scanners.rtsp_probe import RtspProbe
 from scanners.task import CheckTask, NmapTask, ShodanTask
 
 __version__ = "0.1.0"
-
-load_dotenv()
 
 
 def parse_args():
@@ -43,18 +38,12 @@ def parse_args():
         "--config",
         action="store",
         help="Path to the configuration file",
-        default="config.ini",
+        default="config.yaml",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose mode", default=False
     )
     return parser.parse_args()
-
-
-def load_config(config_file):
-    config = ConfigParser()
-    config.read(config_file)
-    return config
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -69,22 +58,22 @@ def _configure_logging(verbose: bool) -> None:
     )
 
 
-def _build_search(config):
-    return ShodanTask(ShodanConfig(**config["shodan_config"]))
+def _build_search(config: AppConfig):
+    return ShodanTask(config.shodan)
 
 
-def _build_check(config):
-    # RTSP probe through the proxy (.env transport) so the login and frame grab
-    # leave via the residential exit, not the local IP.
-    probe = RtspProbe(proxy=TwoCaptchaProxy())
-    return CheckTask(CheckersConfig(**config["checkers_config"]), probe=probe)
+def _build_check(config: AppConfig):
+    # RTSP probe through the proxy so the login and frame grab leave via the
+    # residential exit, not the local IP.
+    probe = RtspProbe(proxy=TwoCaptchaProxy(config.proxy))
+    return CheckTask(config.checkers, probe=probe)
 
 
-def _build_nmap(config):
+def _build_nmap(config: AppConfig):
     # nmap --proxies cannot use socks5, so give it an http proxy regardless of
-    # the .env transport (which may be socks5 for the HTTP client).
-    nmap_proxy = TwoCaptchaProxy(TwoCaptchaSettings(protocol="http"))
-    return NmapTask(NmapConfig(**config["nmap_config"]), nmap_proxy)
+    # the configured transport (which may be socks5 for the HTTP client).
+    http_proxy = TwoCaptchaProxy(config.proxy.model_copy(update={"protocol": "http"}))
+    return NmapTask(config.nmap, http_proxy)
 
 
 _TASK_BUILDERS = {

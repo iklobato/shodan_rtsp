@@ -1,0 +1,30 @@
+# Copy to config.yaml (git-ignored) and fill in. Single source of config + keys.
+
+shodan:
+  api_key: "<your_shodan_api_key>"
+  query: "screenshot.label:webcam,cam country:BR"
+
+checkers:
+  wordlist_users: wordlists/users_small.txt
+  wordlist_passwords: wordlists/passwords_small.txt
+  wordlist_rtsp_urls: wordlists/rtsp_urls_small.txt
+  randomize: true
+
+nmap:
+  ip_range: 200.128.0.0/24
+
+proxy:
+  token: "<your_2captcha_token>"
+  auth_mode: whitelist        # whitelist | login
+  protocol: socks5            # http | https | socks5
+  country: us
+  public_ip: ""               # whitelist mode; auto-detected when empty
+  gateway_host: ""            # login mode only
+  gateway_port: 0             # login mode only
+  gateway_password: ""        # login mode only
+
+database:
+  user: "<postgres_user>"
+  password: "<postgres_password>"
+  host: "localhost"
+  db: "cameras"

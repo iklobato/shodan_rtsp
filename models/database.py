@@ -1,32 +1,18 @@
 from contextlib import contextmanager
 from functools import lru_cache
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-
-class DatabaseSettings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env", env_prefix="POSTGRES_", extra="ignore"
-    )
-
-    user: str
-    password: str
-    host: str
-    db: str
-
-    @property
-    def dsn(self) -> str:
-        return f"postgresql://{self.user}:{self.password}@{self.host}/{self.db}"
+from scanners.config import DatabaseConfig, get_config
 
 
 class Database:
     """Owns the SQLAlchemy engine and hands out transactional sessions."""
 
-    def __init__(self, settings: DatabaseSettings = None):
-        settings = settings or DatabaseSettings()
-        self.engine = create_engine(settings.dsn)
+    def __init__(self, config: DatabaseConfig = None):
+        config = config or get_config().database
+        self.engine = create_engine(config.dsn)
         self._session_factory = sessionmaker(bind=self.engine)
 
     @contextmanager

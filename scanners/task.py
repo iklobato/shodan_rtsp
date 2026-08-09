@@ -101,8 +101,8 @@ class ShodanTask(Task):
     config: ShodanConfig
 
     def run(self) -> None:
-        api = shodan.Shodan(self.config.shodan_key)
-        query = "screenshot.label:webcam,cam country:BR"
+        api = shodan.Shodan(self.config.api_key)
+        query = self.config.query
         logging.info("Updating database")
 
         cams_added = 0
