@@ -6,8 +6,8 @@ from configparser import ConfigParser
 from dotenv import load_dotenv
 
 from scanners.config import CheckersConfig, NmapConfig, ShodanConfig
+from scanners.proxy import TwoCaptchaProxy
 from scanners.task import CheckTask, NmapTask, ShodanTask
-from wordlists.proxy_downloader import ProxyDownloader
 
 __version__ = "0.1.0"
 
@@ -43,12 +43,6 @@ def parse_args():
         default="config.ini",
     )
     parser.add_argument(
-        "--proxy-file",
-        action="store",
-        help="Proxy file path",
-        default="https://raw.githubusercontent.com/MatrixTM/MHDDoS/main/config.json",
-    )
-    parser.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose mode", default=False
     )
 
@@ -77,8 +71,7 @@ def main():
         CheckTask(CheckersConfig(**config["checkers_config"])).run()
 
     if args.start_nmap:
-        proxy_downloader = ProxyDownloader(args.proxy_file)
-        NmapTask(NmapConfig(**config["nmap_config"]), proxy_downloader).run()
+        NmapTask(NmapConfig(**config["nmap_config"]), TwoCaptchaProxy()).run()
 
 
 if __name__ == "__main__":

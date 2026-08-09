@@ -5,8 +5,8 @@ python3 -m tests.test_refactor
 
 from models.managers import CameraRepository
 from scanners.config import CheckersConfig
+from scanners.proxy import TwoCaptchaProxy, TwoCaptchaSettings
 from scanners.rtsp_probe import RtspTarget
-from wordlists.proxy_downloader import Proxy, ProxyDownloader
 
 
 def test_rtsp_target_url_is_formatted_once():
@@ -25,31 +25,8 @@ def test_sanitize_city_strips_injection_chars():
     assert CameraRepository._sanitize_city(None) == ""
 
 
-def test_proxy_parse_coerces_port_and_rejects_junk():
-    assert Proxy.parse("1.2.3.4:80") == Proxy(ip="1.2.3.4", port=80)
-    assert Proxy.parse("3.3.3.3:notaport") is None
-    assert Proxy.parse("broken-line") is None
-
-
-def test_proxy_downloader_loads_all_valid_lines(patch_text):
-    pd = ProxyDownloader("http://example/config.json")
-    patch_text("1.1.1.1:8080\n2.2.2.2:3128\nbroken-line\n3.3.3.3:notaport\n")
-    pd.load_proxies("http://example/list.txt")
-    assert pd._proxies == [
-        Proxy(ip="1.1.1.1", port=8080),
-        Proxy(ip="2.2.2.2", port=3128),
-    ], pd._proxies
-
-
-def test_proxies_property_respects_limit():
-    pd = ProxyDownloader("http://example/config.json", limit=2)
-    pd._proxies = [Proxy(ip=f"9.9.9.{i}", port=80) for i in range(5)]
-    assert len(pd.proxies) == 2
-
-
 def test_checkers_randomize_is_coerced_to_bool():
-    # FilePath only checks existence, so point it at a file we know exists.
-    existing = "config.ini"
+    existing = "config.ini"  # FilePath only checks existence
     assert (
         CheckersConfig(
             wordlist_users=existing,
@@ -70,29 +47,69 @@ def test_checkers_randomize_is_coerced_to_bool():
     )
 
 
-class _FakeResponse:
-    def __init__(self, text):
-        self.status_code = 200
-        self.text = text
+def _proxy(auth_mode, **overrides):
+    settings = TwoCaptchaSettings(
+        proxy_2captcha_aip_token="tok", auth_mode=auth_mode, **overrides
+    )
+    return TwoCaptchaProxy(settings=settings)
 
 
-def _make_text_patcher():
-    def patch(text):
-        import wordlists.proxy_downloader as mod
+def test_whitelist_url_from_api_reply():
+    # Only exercise URL assembly from an already-parsed connection: the live
+    # success shape is not confirmed yet (see _first_connection ponytail note).
+    proxy = _proxy("whitelist", protocol="http")
+    assert proxy._build_whitelist_url("192.0.2.9:24008") == "http://192.0.2.9:24008"
 
-        mod.requests.get = lambda url: _FakeResponse(text)  # noqa: ARG005
 
-    return patch
+def test_first_connection_handles_string_and_dict_shapes():
+    proxy = _proxy("whitelist")
+    assert (
+        proxy._first_connection({"status": "OK", "data": ["1.2.3.4:8080"]})
+        == "1.2.3.4:8080"
+    )
+    assert (
+        proxy._first_connection(
+            {"status": "OK", "data": {"connections": [{"ip": "5.6.7.8", "port": 3128}]}}
+        )
+        == "5.6.7.8:3128"
+    )
+
+
+def test_first_connection_raises_on_error_status():
+    proxy = _proxy("whitelist")
+    try:
+        proxy._first_connection(
+            {"status": "ERROR_MISSING_IP", "message": "IP address is missing"}
+        )
+    except RuntimeError as e:
+        assert "IP address is missing" in str(e)
+    else:
+        raise AssertionError("expected RuntimeError on error status")
+
+
+def test_login_url_needs_gateway_fields():
+    proxy = _proxy(
+        "login", gateway_host="gw.example", gateway_port=8000, gateway_password="pw"
+    )
+    assert proxy._build_login_url("uc123") == "http://uc123:pw@gw.example:8000"
+
+    incomplete = _proxy("login")
+    try:
+        incomplete._build_login_url("uc123")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError when gateway fields are missing")
 
 
 def _run():
-    patch_text = _make_text_patcher()
     test_rtsp_target_url_is_formatted_once()
     test_sanitize_city_strips_injection_chars()
-    test_proxy_parse_coerces_port_and_rejects_junk()
-    test_proxy_downloader_loads_all_valid_lines(patch_text)
-    test_proxies_property_respects_limit()
     test_checkers_randomize_is_coerced_to_bool()
+    test_whitelist_url_from_api_reply()
+    test_first_connection_handles_string_and_dict_shapes()
+    test_first_connection_raises_on_error_status()
+    test_login_url_needs_gateway_fields()
 
     try:
         from scanners.task import ShodanBanner

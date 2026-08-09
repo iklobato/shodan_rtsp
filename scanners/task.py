@@ -12,8 +12,8 @@ from shodan import APIError
 from models.camera import Camera
 from models.managers import CameraRepository
 from scanners.config import CheckersConfig, NmapConfig, ShodanConfig
+from scanners.proxy import TwoCaptchaProxy
 from scanners.rtsp_probe import RtspProbe, RtspTarget
-from wordlists.proxy_downloader import ProxyDownloader
 
 __version__ = "0.1.0"
 
@@ -57,11 +57,11 @@ class NmapTask(Task):
     def __init__(
         self,
         config: NmapConfig,
-        proxy_downloader: ProxyDownloader,
+        proxy: TwoCaptchaProxy,
         repository: CameraRepository = None,
     ):
         super().__init__(config, repository)
-        self.proxy_downloader = proxy_downloader
+        self.proxy = proxy
         self.scanner = nmap.PortScanner()
 
     def run(self) -> None:
@@ -77,10 +77,8 @@ class NmapTask(Task):
         logging.info("Executors: finished nmap scan")
 
     def _scan(self, target: str) -> Dict:
-        proxies = self.proxy_downloader.proxies
-        parsed_proxies = ",".join(f"{p.ip}:{p.port}" for p in proxies)
         response = self.scanner.scan(
-            hosts=target, arguments=f"-p 554 -sV --proxies {parsed_proxies}"
+            hosts=target, arguments=f"-p 554 -sV --proxies {self.proxy.url()}"
         )
         return response.get("scan")
 
