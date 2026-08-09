@@ -49,6 +49,8 @@ class CameraRepository:
                 )
                 return False
             db_cam.active = True
+            db_cam.user = camera.user
+            db_cam.password = camera.password
             db_cam.url = camera.url
             db_cam.image_b64 = camera.image_b64
             logging.debug(f"Updated {camera.ip}:{camera.port}")

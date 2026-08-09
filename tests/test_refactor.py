@@ -6,8 +6,14 @@ Anything needing python-nmap / shodan is skipped when those are absent, so the
 suite runs without the scanning stack installed.
 """
 
-import pytest
+from contextlib import contextmanager
 
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from models.camera import Base, Camera
 from models.managers import CameraRepository
 from scanners.config import CheckersConfig
 from scanners.proxy import (
@@ -342,3 +348,58 @@ def test_shodan_banner_ignores_extra_and_coerces():
     )
     assert banner.port == 554
     assert banner.location.city == "SP"
+
+
+# --- repository (in-memory sqlite, no external DB) ------------------------
+
+
+class _MemoryDatabase:
+    """A Database stand-in backed by one shared in-memory sqlite connection."""
+
+    def __init__(self):
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(self.engine)
+        self._session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
+
+    @contextmanager
+    def session_scope(self):
+        session = self._session_factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+
+def test_set_active_persists_credentials_into_columns():
+    repo = CameraRepository(database=_MemoryDatabase())
+    repo.insert_camera(Camera(ip="1.2.3.4", port=554))  # inactive, no creds yet
+
+    found = Camera(
+        ip="1.2.3.4",
+        port=554,
+        user="admin",
+        password="1234",
+        url="rtsp://admin:1234@1.2.3.4:554/live",
+        image_b64=b"jpg",
+        active=True,
+    )
+    assert repo.set_active(found) is True
+
+    active = repo.get_active()
+    assert len(active) == 1
+    stored = active[0]
+    assert (stored.user, stored.password) == ("admin", "1234")
+    assert stored.url == "rtsp://admin:1234@1.2.3.4:554/live"
+
+
+def test_set_active_returns_false_for_unknown_camera():
+    repo = CameraRepository(database=_MemoryDatabase())
+    assert repo.set_active(Camera(ip="9.9.9.9", port=1)) is False
