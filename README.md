@@ -21,6 +21,26 @@ repo. Provide your own, restricted to the targets you are authorized to test.
 
 ---
 
+## Quickstart
+
+```bash
+uv sync                                # install deps into .venv (uv fetches Python 3.11 if needed)
+docker compose up -d                   # Postgres on localhost:5433
+cp config.yaml.example config.yaml     # then edit: shodan.api_key, proxy.token, DB creds
+uv run python main.py --start_search   # populate the DB from Shodan
+uv run python main.py --start_check -v # test default creds through the proxy (needs your wordlists)
+```
+
+First run only, create the table the app expects:
+
+```bash
+uv run python -c "from models.database import Database; from models.camera import Base; Base.metadata.create_all(Database().engine)"
+```
+
+Each step is explained below (Installation, Configuration, Usage).
+
+---
+
 ## How it works
 
 The scanner has three run modes and one storage layer. Everything is wired from
@@ -105,8 +125,9 @@ docker compose ps             # wait for "healthy"
 docker compose down           # stop (keeps data); add -v to wipe the volume
 ```
 
-`curl_cffi` is optional but recommended (browser TLS fingerprint); without it the
-client uses the stdlib CONNECT fallback.
+`curl_cffi` is installed by `uv sync` and gives the HTTP client a real browser
+TLS (JA3/JA4) fingerprint. The code keeps a dependency-free stdlib CONNECT
+fallback for the rare case it is missing.
 
 ## Configuration
 
