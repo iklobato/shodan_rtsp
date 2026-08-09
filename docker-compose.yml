@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: shodan_pg
+    environment:
+      POSTGRES_USER: scanner
+      POSTGRES_PASSWORD: scanner
+      POSTGRES_DB: cameras
+    ports:
+      - "5433:5432"   # 5433 on the host avoids clashing with a local 5432
+    volumes:
+      - shodan_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scanner -d cameras"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  shodan_pg_data:

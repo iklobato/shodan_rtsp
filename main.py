@@ -1,73 +1,96 @@
 import logging
+import os
 from argparse import ArgumentParser
-from configparser import ConfigParser
 
-from dotenv import load_dotenv
+from scanners.config import AppConfig, load_config
+from scanners.proxy import TwoCaptchaProxy
+from scanners.rtsp_probe import RtspProbe
+from scanners.task import CheckTask, NmapTask, ShodanTask
 
-from scanners.task import ShodanTask, CheckTask, NmapTask
-
-
-__version__ = '0.1.0'
-
-from wordlists.proxy_downloader import ProxyDownloader
-
-load_dotenv()
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s %(message)s',
-    handlers=[
-        logging.FileHandler("./logs/rtsp_scanner.log"),
-        logging.StreamHandler()
-    ]
-)
+__version__ = "0.1.0"
 
 
 def parse_args():
-    parser = ArgumentParser(description='Camera Scanner')
+    parser = ArgumentParser(description="Camera Scanner")
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('--start_search', action='store_true', help='Start searching for cameras on Shodan')
-    group.add_argument('--start_check', action='store_true', help='Start testing cameras on DB')
-    group.add_argument('--start_nmap', action='store_true', help='Start nmap scan')
-    parser.add_argument('--config', action='store', help='Path to the configuration file', default='config.ini')
-    parser.add_argument('--proxy-file', action='store', help='Proxy file path', default='https://raw.githubusercontent.com/MatrixTM/MHDDoS/main/config.json')
-    parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode', default=False)
-
+    group.add_argument(
+        "--start_search",
+        dest="mode",
+        action="store_const",
+        const="search",
+        help="Start searching for cameras on Shodan",
+    )
+    group.add_argument(
+        "--start_check",
+        dest="mode",
+        action="store_const",
+        const="check",
+        help="Start testing cameras on DB",
+    )
+    group.add_argument(
+        "--start_nmap",
+        dest="mode",
+        action="store_const",
+        const="nmap",
+        help="Start nmap scan",
+    )
+    parser.add_argument(
+        "--config",
+        action="store",
+        help="Path to the configuration file",
+        default="config.yaml",
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Verbose mode", default=False
+    )
     return parser.parse_args()
 
 
-def load_config(config_file):
-    config = ConfigParser()
-    config.read(config_file)
-    return config
+def _configure_logging(verbose: bool) -> None:
+    os.makedirs("logs", exist_ok=True)
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[
+            logging.FileHandler("logs/rtsp_scanner.log"),
+            logging.StreamHandler(),
+        ],
+    )
+
+
+def _build_search(config: AppConfig):
+    return ShodanTask(config.shodan)
+
+
+def _build_check(config: AppConfig):
+    # RTSP probe through the proxy so the login and frame grab leave via the
+    # residential exit, not the local IP.
+    probe = RtspProbe(proxy=TwoCaptchaProxy(config.proxy))
+    return CheckTask(config.checkers, probe=probe)
+
+
+def _build_nmap(config: AppConfig):
+    # nmap --proxies cannot use socks5, so give it an http proxy regardless of
+    # the configured transport (which may be socks5 for the HTTP client).
+    http_proxy = TwoCaptchaProxy(config.proxy.model_copy(update={"protocol": "http"}))
+    return NmapTask(config.nmap, http_proxy)
+
+
+_TASK_BUILDERS = {
+    "search": _build_search,
+    "check": _build_check,
+    "nmap": _build_nmap,
+}
 
 
 def main():
     args = parse_args()
-    proxy_downloader = ProxyDownloader(args.proxy_file)
-
+    _configure_logging(args.verbose)
     if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-        logging.info('Verbose mode enabled')
-
+        logging.info("Verbose mode enabled")
     config = load_config(args.config)
-    settings = {**config, **vars(args)}
-
-    if args.start_search:
-        shodan_config = settings.get('shodan_config')
-        shodan_searcher = ShodanTask(shodan_config, proxy_downloader)
-        shodan_searcher.run()
-
-    if args.start_check:
-        checkers_config = settings.get('checkers_config')
-        checker = CheckTask(checkers_config, proxy_downloader)
-        checker.run()
-
-    if args.start_nmap:
-        nmap_config = settings.get('nmap_config')
-        nmap_searcher = NmapTask(nmap_config, proxy_downloader)
-        nmap_searcher.run()
+    _TASK_BUILDERS[args.mode](config).run()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
