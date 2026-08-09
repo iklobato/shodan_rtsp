@@ -23,8 +23,8 @@ repo. Provide your own, restricted to the targets you are authorized to test.
 
 ## How it works
 
-The scanner has three run modes, one storage layer, and one viewer. Everything
-is wired from a single `config.yaml` (see Configuration).
+The scanner has three run modes and one storage layer. Everything is wired from
+a single `config.yaml` (see Configuration).
 
 ```
                          config.yaml  (single source of settings + keys)
@@ -39,10 +39,8 @@ is wired from a single `config.yaml` (see Configuration).
         ▼                     ▼                    │ (found → creds + frame)
    ┌─────────────────────────────────────────────▼──────────┐
    │                 PostgreSQL  (cam table)                   │
+   │        active cameras hold the working creds + frame      │
    └─────────────────────────────────────────────────────────┘
-                              ▲
-                       serv_app.py (Streamlit)
-                    reads active cameras → frames/
 ```
 
 **Modes** (`scanners/task.py`)
@@ -79,16 +77,23 @@ is wired from a single `config.yaml` (see Configuration).
 - `models/managers.py` — `CameraRepository`, the only place that queries the
   table.
 
-**Viewer** (`serv_app.py`) — a Streamlit app that reads the active cameras and
-writes their frames to `frames/`.
+A successful check stores the working credentials and the proof frame
+(`image_b64`) on the camera row, so the results live entirely in the database.
 
 ## Installation
+
+Dependencies are managed with [uv](https://docs.astral.sh/uv/); `pyproject.toml`
+is the single source and `uv.lock` pins exact versions.
 
 ```bash
 git clone https://github.com/iklobato/shodan_rtsp
 cd shodan_rtsp
-pip install -r requirements.txt
+uv sync                       # creates .venv, installs runtime + dev deps from the lock
 ```
+
+`uv` provisions Python 3.11 itself if it is missing (see `.python-version`). To
+install with plain pip instead, export a requirements file first:
+`uv export --no-hashes --no-dev -o requirements.txt`.
 
 A running PostgreSQL is required for anything that touches the database. The
 repo ships a `docker-compose.yml` that starts one on `localhost:5433` (matching
@@ -158,7 +163,7 @@ Notes
 ## Usage
 
 ```bash
-python main.py [--start_search | --start_check | --start_nmap] [--config config.yaml] [-v]
+uv run python main.py [--start_search | --start_check | --start_nmap] [--config config.yaml] [-v]
 ```
 
 Exactly one mode is required. The **CLI flags are only** the mode, `--config`
@@ -179,8 +184,8 @@ config files and choosing one with `--config`.
 **1. Discover cameras, then check them (basic flow)**
 
 ```bash
-python main.py --start_search           # fill the DB from Shodan
-python main.py --start_check -v          # try default creds, grab a frame on success
+uv run python main.py --start_search           # fill the DB from Shodan
+uv run python main.py --start_check -v          # try default creds, grab a frame on success
 ```
 
 **2. Check with parallelism**
@@ -194,7 +199,7 @@ checkers:
 ```
 
 ```bash
-python main.py --start_check -v
+uv run python main.py --start_check -v
 ```
 
 **3. With the proxy (this is the default for check and nmap)**
@@ -234,21 +239,23 @@ nmap:
 ```
 
 ```bash
-python main.py --start_nmap -v
+uv run python main.py --start_nmap -v
 ```
 
 **5. Keep separate config profiles and switch with `--config`**
 
 ```bash
 # e.g. a fast, high-concurrency profile vs a quiet one
-python main.py --start_check --config config.fast.yaml -v
-python main.py --start_check --config config.quiet.yaml
+uv run python main.py --start_check --config config.fast.yaml -v
+uv run python main.py --start_check --config config.quiet.yaml
 ```
 
-View results:
+View results — active cameras and their working credentials live in the `cam`
+table:
 
 ```bash
-streamlit run serv_app.py
+psql "postgresql://scanner:scanner@localhost:5433/cameras" \
+  -c "select ip, port, user, password, url from cam where active;"
 ```
 
 ## Development
@@ -256,8 +263,12 @@ streamlit run serv_app.py
 Run the tests (no external services needed; DB and network are faked):
 
 ```bash
-python -m pytest tests/ -q
+uv run pytest -q
 ```
+
+Lint with `uv run ruff check .` (config in `pyproject.toml`). Add a dependency
+with `uv add <pkg>` (or `uv add --dev <pkg>` for tooling); both update
+`pyproject.toml` and `uv.lock`.
 
 The code follows an OO/SOLID structure: strategies behind `typing.Protocol`
 (`Fetcher` backends, RTSP `Transport`), dependency injection at the composition

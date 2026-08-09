@@ -1,0 +1,34 @@
+[project]
+name = "shodan-rtsp"
+version = "0.1.0"
+description = "RTSP camera security research scanner: Shodan/Nmap discovery, credential check, proxied probing."
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "shodan==1.28.0",
+    "opencv-python-headless==4.8.0.74",
+    "psycopg2-binary>=2.9.9,<3",   # 2.9.1 had no cp311 wheel; 2.9.9+ ships one
+    "python-nmap==0.7.1",
+    "SQLAlchemy==2.0.19",
+    "pydantic==2.11.10",
+    "pyyaml>=6",            # scanners/config.py imports yaml directly
+    "curl_cffi~=0.15.0",    # optional at runtime (find_spec), used when present
+    "numpy>=1.24,<2",       # opencv 4.8 wheels are built against numpy 1.x (ABI)
+]
+
+[dependency-groups]
+dev = [
+    "pytest~=8.4.1",
+    "ruff>=0.6",
+]
+
+[tool.uv]
+package = false            # application, not an installable/distributed package
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+# ruff's classic default set, pinned so a ruff upgrade does not silently start
+# flagging new rules across the repo. Broadening this is a separate cleanup.
+select = ["E4", "E7", "E9", "F"]
