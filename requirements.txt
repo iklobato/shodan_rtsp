@@ -12,5 +12,6 @@ pydantic-settings==2.10.1
 
 
 requests~=2.31.0
+curl_cffi~=0.15.0
 numpy~=1.24.4
 Pillow~=9.5.0

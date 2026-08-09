@@ -6,7 +6,8 @@ from configparser import ConfigParser
 from dotenv import load_dotenv
 
 from scanners.config import CheckersConfig, NmapConfig, ShodanConfig
-from scanners.proxy import TwoCaptchaProxy
+from scanners.proxy import TwoCaptchaProxy, TwoCaptchaSettings
+from scanners.rtsp_probe import RtspProbe
 from scanners.task import CheckTask, NmapTask, ShodanTask
 
 __version__ = "0.1.0"
@@ -68,10 +69,16 @@ def main():
         ShodanTask(ShodanConfig(**config["shodan_config"])).run()
 
     if args.start_check:
-        CheckTask(CheckersConfig(**config["checkers_config"])).run()
+        # RTSP probe through the proxy (.env transport) so the login and frame
+        # grab leave via the residential exit, not the local IP.
+        probe = RtspProbe(proxy=TwoCaptchaProxy())
+        CheckTask(CheckersConfig(**config["checkers_config"]), probe=probe).run()
 
     if args.start_nmap:
-        NmapTask(NmapConfig(**config["nmap_config"]), TwoCaptchaProxy()).run()
+        # nmap --proxies cannot use socks5, so give it an http proxy regardless
+        # of the .env transport (which may be socks5 for the HTTP client).
+        nmap_proxy = TwoCaptchaProxy(TwoCaptchaSettings(protocol="http"))
+        NmapTask(NmapConfig(**config["nmap_config"]), nmap_proxy).run()
 
 
 if __name__ == "__main__":

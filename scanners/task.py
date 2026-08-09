@@ -17,6 +17,10 @@ from scanners.rtsp_probe import RtspProbe, RtspTarget
 
 __version__ = "0.1.0"
 
+# nmap --proxies only relays through HTTP/SOCKS4 (see `nmap --help`); a socks5
+# proxy is rejected, so NmapTask must be given one of these.
+_NMAP_PROXY_SCHEMES = ("http", "socks4", "socks4a")
+
 
 class _Location(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -77,8 +81,16 @@ class NmapTask(Task):
         logging.info("Executors: finished nmap scan")
 
     def _scan(self, target: str) -> Dict:
+        proxy_url = self.proxy.url()
+        scheme = proxy_url.split("://", 1)[0].lower()
+        if scheme not in _NMAP_PROXY_SCHEMES:
+            raise ValueError(
+                f"nmap --proxies supports {_NMAP_PROXY_SCHEMES}, got {scheme!r}; "
+                "give NmapTask an http proxy (TwoCaptchaSettings(protocol='http')). "
+                "Failing loud so the scan never silently runs un-proxied."
+            )
         response = self.scanner.scan(
-            hosts=target, arguments=f"-p 554 -sV --proxies {self.proxy.url()}"
+            hosts=target, arguments=f"-p 554 -sV --proxies {proxy_url}"
         )
         return response.get("scan")
 
