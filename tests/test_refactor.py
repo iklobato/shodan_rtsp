@@ -54,25 +54,37 @@ def _proxy(auth_mode, **overrides):
     return TwoCaptchaProxy(settings=settings)
 
 
-def test_whitelist_url_from_api_reply():
-    # Only exercise URL assembly from an already-parsed connection: the live
-    # success shape is not confirmed yet (see _first_connection ponytail note).
+def test_first_connection_reads_confirmed_success_shape():
+    # Confirmed live: data is a list of full proxy URLs.
     proxy = _proxy("whitelist", protocol="http")
-    assert proxy._build_whitelist_url("192.0.2.9:24008") == "http://192.0.2.9:24008"
+    reply = {
+        "status": "OK",
+        "data": ["http://78.141.222.54:15000", "http://78.141.222.54:15001"],
+    }
+    conn = proxy._first_connection(reply)
+    assert conn == "http://78.141.222.54:15000"
+    assert proxy._normalize(conn) == "http://78.141.222.54:15000"
 
 
-def test_first_connection_handles_string_and_dict_shapes():
+def test_first_connection_prepends_scheme_for_bare_ip_port():
+    proxy = _proxy("whitelist", protocol="socks5")
+    conn = proxy._first_connection({"status": "OK", "data": ["1.2.3.4:8080"]})
+    assert proxy._normalize(conn) == "socks5://1.2.3.4:8080"
+
+
+def test_first_connection_rejects_error_packed_in_200():
+    # The real failure seen when country was missing (FK error inside data).
     proxy = _proxy("whitelist")
-    assert (
-        proxy._first_connection({"status": "OK", "data": ["1.2.3.4:8080"]})
-        == "1.2.3.4:8080"
-    )
-    assert (
-        proxy._first_connection(
-            {"status": "OK", "data": {"connections": [{"ip": "5.6.7.8", "port": 3128}]}}
-        )
-        == "5.6.7.8:3128"
-    )
+    reply = {
+        "status": "OK",
+        "data": ["Foreign key constraint failed on country_code", "Bad Request", 400],
+    }
+    try:
+        proxy._first_connection(reply)
+    except RuntimeError as e:
+        assert "no usable proxy" in str(e)
+    else:
+        raise AssertionError("expected RuntimeError when data holds an error")
 
 
 def test_first_connection_raises_on_error_status():
@@ -106,8 +118,9 @@ def _run():
     test_rtsp_target_url_is_formatted_once()
     test_sanitize_city_strips_injection_chars()
     test_checkers_randomize_is_coerced_to_bool()
-    test_whitelist_url_from_api_reply()
-    test_first_connection_handles_string_and_dict_shapes()
+    test_first_connection_reads_confirmed_success_shape()
+    test_first_connection_prepends_scheme_for_bare_ip_port()
+    test_first_connection_rejects_error_packed_in_200()
     test_first_connection_raises_on_error_status()
     test_login_url_needs_gateway_fields()
 

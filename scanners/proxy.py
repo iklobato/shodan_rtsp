@@ -2,8 +2,8 @@
 
 Whitelist mode (recommended for a scanner on a fixed box): the machine's
 public IPv4 must be added to the account whitelist in the 2captcha web
-dashboard first (there is no API for that step). Then the API hands back an
-ip:port that connects without credentials.
+dashboard first (there is no API for that step). Then the API hands back a
+ready http://ip:port that connects with no credentials from that IP.
 
 Login mode: username:password@host:port, where the username is read from the
 API and the host/port/password come from the dashboard (env-configured).
@@ -28,6 +28,7 @@ class TwoCaptchaSettings(BaseSettings):
     proxy_2captcha_aip_token: str
     auth_mode: str = "whitelist"  # 'whitelist' | 'login'
     protocol: str = "http"  # http | https | socks5
+    country: str = "us"  # exit country code; BR is not offered by 2captcha
     public_ip: str = ""  # whitelist mode; auto-detected when empty
     gateway_host: str = ""  # login mode (from dashboard)
     gateway_port: int = 0  # login mode (from dashboard)
@@ -65,9 +66,10 @@ class TwoCaptchaProxy:
             "/proxy/generate_white_list_connections",
             ip=ip,
             protocol=self._s.protocol,
+            country=self._s.country,
             connection_count=1,
         )
-        return self._build_whitelist_url(self._first_connection(data))
+        return self._normalize(self._first_connection(data))
 
     def _build_login_url(self, username: str) -> str:
         s = self._s
@@ -77,7 +79,9 @@ class TwoCaptchaProxy:
             )
         return f"{s.protocol}://{username}:{s.gateway_password}@{s.gateway_host}:{s.gateway_port}"
 
-    def _build_whitelist_url(self, connection: str) -> str:
+    def _normalize(self, connection: str) -> str:
+        if "://" in connection:
+            return connection
         return f"{self._s.protocol}://{connection}"
 
     def _account_username(self) -> str:
@@ -86,29 +90,29 @@ class TwoCaptchaProxy:
 
     @staticmethod
     def _first_connection(data: dict) -> str:
-        """Pull the first ip:port out of a generate_white_list_connections reply.
+        """Pull the first proxy out of a generate_white_list_connections reply.
 
-        ponytail: response shape confirmed only for the error path so far; the
-        success shape is handled defensively and the raw body is raised on a
-        miss so the real structure surfaces on first live run instead of a
-        silent wrong proxy.
+        Confirmed success shape: {"status":"OK","data":["http://ip:port", ...]}.
+        The endpoint can also pack an error (e.g. a missing country) inside a
+        200 'data' list, so anything that is not a real connection falls
+        through and the raw body is raised instead of a silent wrong proxy.
         """
         if data.get("status") != "OK":
             raise RuntimeError(f'2captcha proxy error: {data.get("message", data)}')
-        payload = data.get("data", data)
-        candidates = (
-            payload
-            if isinstance(payload, list)
-            else (payload.get("connections") or payload.get("list") or [])
-        )
-        for item in candidates:
-            if isinstance(item, str) and ":" in item:
-                return item
-            if isinstance(item, dict):
+        items = data.get("data", [])
+        if isinstance(items, dict):
+            items = items.get("connections") or items.get("list") or []
+        for item in items:
+            if isinstance(item, str):
+                if item.startswith(("http://", "https://", "socks5://")):
+                    return item
+                if ":" in item and " " not in item:  # bare ip:port
+                    return item
+            elif isinstance(item, dict):
                 ip, port = item.get("ip"), item.get("port")
                 if ip and port:
                     return f"{ip}:{port}"
-        raise RuntimeError(f"no connection found in 2captcha reply: {data}")
+        raise RuntimeError(f"no usable proxy in 2captcha reply: {data}")
 
     def _api(self, path: str, **params) -> dict:
         params["key"] = self._s.proxy_2captcha_aip_token
