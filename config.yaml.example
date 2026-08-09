@@ -9,9 +9,11 @@ checkers:
   wordlist_passwords: wordlists/passwords_small.txt
   wordlist_rtsp_urls: wordlists/rtsp_urls_small.txt
   randomize: true
+  concurrency: 1              # parallel RTSP probes; raise to speed up, bounded by the proxy exit
 
 nmap:
   ip_range: 200.128.0.0/24
+  parallelism: 0             # > 0 runs nmap with -T4 --min-parallelism N; 0 = nmap defaults
 
 proxy:
   token: "<your_2captcha_token>"

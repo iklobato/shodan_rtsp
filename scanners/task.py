@@ -2,6 +2,7 @@ import itertools
 import logging
 import random
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict
 
 import nmap
@@ -89,9 +90,10 @@ class NmapTask(Task):
                 "give NmapTask an http proxy (TwoCaptchaSettings(protocol='http')). "
                 "Failing loud so the scan never silently runs un-proxied."
             )
-        response = self.scanner.scan(
-            hosts=target, arguments=f"-p 554 -sV --proxies {proxy_url}"
-        )
+        arguments = f"-p 554 -sV --proxies {proxy_url}"
+        if self.config.parallelism > 0:
+            arguments += f" -T4 --min-parallelism {self.config.parallelism}"
+        response = self.scanner.scan(hosts=target, arguments=arguments)
         return response.get("scan")
 
 
@@ -157,17 +159,23 @@ class CheckTask(Task):
         logging.debug(f"Testing {len(cameras)} cameras")
 
         combinations = itertools.product(rtsp_urls, users, passwords, cameras)
-        for url_template, user, password, camera in combinations:
-            target = RtspTarget(
+        targets = (
+            RtspTarget(
                 host=camera.ip,
                 port=camera.port,
                 user=user,
                 password=password,
                 url_template=url_template,
             )
-            found = self.probe.probe(target)
-            if found:
-                self.repository.set_active(found)
+            for url_template, user, password, camera in combinations
+        )
+        # concurrency workers probe in parallel (I/O-bound); results are consumed
+        # here on one thread so set_active stays serial. map preserves order and
+        # pulls the target generator lazily, so all combos are never materialised.
+        with ThreadPoolExecutor(max_workers=self.config.concurrency) as pool:
+            for found in pool.map(self.probe.probe, targets):
+                if found:
+                    self.repository.set_active(found)
         logging.info("Executors: finished testing cameras")
 
     @staticmethod
