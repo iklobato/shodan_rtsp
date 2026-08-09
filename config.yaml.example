@@ -26,7 +26,10 @@ proxy:
   gateway_password: ""        # login mode only
 
 database:
+  # dockerized postgres, e.g.:
+  #   docker run -d --name shodan_pg -e POSTGRES_USER=scanner \
+  #     -e POSTGRES_PASSWORD=scanner -e POSTGRES_DB=cameras -p 5433:5432 postgres:16
   user: "<postgres_user>"
   password: "<postgres_password>"
-  host: "localhost"
+  host: "localhost:5433"   # host[:port]; 5433 avoids clashing with a local 5432
   db: "cameras"
