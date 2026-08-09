@@ -1,37 +1,56 @@
 import logging
+import os
 from argparse import ArgumentParser
 from configparser import ConfigParser
 
 from dotenv import load_dotenv
 
-from scanners.task import ShodanTask, CheckTask, NmapTask
-
-
-__version__ = '0.1.0'
-
+from scanners.config import CheckersConfig, NmapConfig, ShodanConfig
+from scanners.task import CheckTask, NmapTask, ShodanTask
 from wordlists.proxy_downloader import ProxyDownloader
+
+__version__ = "0.1.0"
 
 load_dotenv()
 
+os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s %(levelname)s %(message)s',
+    format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
-        logging.FileHandler("./logs/rtsp_scanner.log"),
-        logging.StreamHandler()
-    ]
+        logging.FileHandler("logs/rtsp_scanner.log"),
+        logging.StreamHandler(),
+    ],
 )
 
 
 def parse_args():
-    parser = ArgumentParser(description='Camera Scanner')
+    parser = ArgumentParser(description="Camera Scanner")
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('--start_search', action='store_true', help='Start searching for cameras on Shodan')
-    group.add_argument('--start_check', action='store_true', help='Start testing cameras on DB')
-    group.add_argument('--start_nmap', action='store_true', help='Start nmap scan')
-    parser.add_argument('--config', action='store', help='Path to the configuration file', default='config.ini')
-    parser.add_argument('--proxy-file', action='store', help='Proxy file path', default='https://raw.githubusercontent.com/MatrixTM/MHDDoS/main/config.json')
-    parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode', default=False)
+    group.add_argument(
+        "--start_search",
+        action="store_true",
+        help="Start searching for cameras on Shodan",
+    )
+    group.add_argument(
+        "--start_check", action="store_true", help="Start testing cameras on DB"
+    )
+    group.add_argument("--start_nmap", action="store_true", help="Start nmap scan")
+    parser.add_argument(
+        "--config",
+        action="store",
+        help="Path to the configuration file",
+        default="config.ini",
+    )
+    parser.add_argument(
+        "--proxy-file",
+        action="store",
+        help="Proxy file path",
+        default="https://raw.githubusercontent.com/MatrixTM/MHDDoS/main/config.json",
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Verbose mode", default=False
+    )
 
     return parser.parse_args()
 
@@ -44,30 +63,23 @@ def load_config(config_file):
 
 def main():
     args = parse_args()
-    proxy_downloader = ProxyDownloader(args.proxy_file)
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-        logging.info('Verbose mode enabled')
+        logging.info("Verbose mode enabled")
 
     config = load_config(args.config)
-    settings = {**config, **vars(args)}
 
     if args.start_search:
-        shodan_config = settings.get('shodan_config')
-        shodan_searcher = ShodanTask(shodan_config, proxy_downloader)
-        shodan_searcher.run()
+        ShodanTask(ShodanConfig(**config["shodan_config"])).run()
 
     if args.start_check:
-        checkers_config = settings.get('checkers_config')
-        checker = CheckTask(checkers_config, proxy_downloader)
-        checker.run()
+        CheckTask(CheckersConfig(**config["checkers_config"])).run()
 
     if args.start_nmap:
-        nmap_config = settings.get('nmap_config')
-        nmap_searcher = NmapTask(nmap_config, proxy_downloader)
-        nmap_searcher.run()
+        proxy_downloader = ProxyDownloader(args.proxy_file)
+        NmapTask(NmapConfig(**config["nmap_config"]), proxy_downloader).run()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
