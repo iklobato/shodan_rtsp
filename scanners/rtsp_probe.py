@@ -9,6 +9,7 @@ should open, as a context manager, so probe() stays flat and branch-free.
 
 import logging
 import os
+import threading
 import urllib.parse
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -55,18 +56,38 @@ def _rewrite_netloc(url: str, host: str, port: int) -> str:
     )
 
 
+_capture_options_lock = threading.Lock()
+_capture_options_depth = 0
+_capture_options_previous = None
+
+
 @contextmanager
 def _ffmpeg_tcp_transport() -> Iterator[None]:
-    """Force OpenCV/FFmpeg to RTSP-over-TCP for the duration, then restore."""
-    previous = os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS")
-    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = _TCP_CAPTURE_OPTIONS
+    """Force OpenCV/FFmpeg to RTSP-over-TCP for the duration, then restore.
+
+    The option is a process-global env var, so under a CheckTask thread pool a
+    per-call set/restore would race: one probe's restore could clear it while
+    another is opening its capture. A depth counter keeps it set while any probe
+    is active and restores the prior value only when the last one leaves.
+    """
+    global _capture_options_depth, _capture_options_previous
+    with _capture_options_lock:
+        if _capture_options_depth == 0:
+            _capture_options_previous = os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS")
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = _TCP_CAPTURE_OPTIONS
+        _capture_options_depth += 1
     try:
         yield
     finally:
-        if previous is None:
-            os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
-        else:
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = previous
+        with _capture_options_lock:
+            _capture_options_depth -= 1
+            if _capture_options_depth == 0:
+                if _capture_options_previous is None:
+                    os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
+                else:
+                    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+                        _capture_options_previous
+                    )
 
 
 @contextmanager

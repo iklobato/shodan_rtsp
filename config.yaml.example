@@ -9,9 +9,11 @@ checkers:
   wordlist_passwords: wordlists/passwords_small.txt
   wordlist_rtsp_urls: wordlists/rtsp_urls_small.txt
   randomize: true
+  concurrency: 1              # parallel RTSP probes; raise to speed up, bounded by the proxy exit
 
 nmap:
   ip_range: 200.128.0.0/24
+  parallelism: 0             # > 0 runs nmap with -T4 --min-parallelism N; 0 = nmap defaults
 
 proxy:
   token: "<your_2captcha_token>"
@@ -24,7 +26,10 @@ proxy:
   gateway_password: ""        # login mode only
 
 database:
+  # dockerized postgres, e.g.:
+  #   docker run -d --name shodan_pg -e POSTGRES_USER=scanner \
+  #     -e POSTGRES_PASSWORD=scanner -e POSTGRES_DB=cameras -p 5433:5432 postgres:16
   user: "<postgres_user>"
   password: "<postgres_password>"
-  host: "localhost"
+  host: "localhost:5433"   # host[:port]; 5433 avoids clashing with a local 5432
   db: "cameras"

@@ -24,10 +24,18 @@ class CheckersConfig(BaseModel):
     wordlist_passwords: str
     wordlist_rtsp_urls: str
     randomize: bool = False
+    # RTSP probes are I/O-bound (network + ffmpeg wait), so threads give near
+    # linear speedup. The real ceiling is the proxy exit, not the CPU: too many
+    # concurrent streams through one residential exit get throttled. 1 keeps the
+    # old sequential behaviour; raise it and watch the error rate.
+    concurrency: int = 1
 
 
 class NmapConfig(BaseModel):
     ip_range: str
+    # nmap parallelises hosts itself; this tunes that. When > 0 the scan runs
+    # with `-T4 --min-parallelism <N>`. 0 leaves nmap's own defaults untouched.
+    parallelism: int = 0
 
 
 class ProxyConfig(BaseModel):

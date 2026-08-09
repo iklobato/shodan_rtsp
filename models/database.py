@@ -13,7 +13,10 @@ class Database:
     def __init__(self, config: DatabaseConfig = None):
         config = config or get_config().database
         self.engine = create_engine(config.dsn)
-        self._session_factory = sessionmaker(bind=self.engine)
+        # expire_on_commit=False so rows read inside session_scope() keep their
+        # loaded column values after the session closes; the repository returns
+        # detached Camera objects that callers (CheckTask) read outside the scope.
+        self._session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
 
     @contextmanager
     def session_scope(self):
