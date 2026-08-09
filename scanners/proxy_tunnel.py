@@ -7,6 +7,10 @@ accepts is relayed to the real destination *through the proxy* (HTTP CONNECT or
 a SOCKS5 handshake). The client believes it talks to a local server; the bytes
 actually leave via the proxy exit. Force ``rtsp_transport=tcp`` on the client so
 control and media share the one TCP stream the tunnel can carry.
+
+The socket boundaries here keep the few try blocks they need (a relay of raw
+sockets is exactly the "external boundary" error handling belongs at); the
+scheme choice is a dispatch table, not an if/elif ladder.
 """
 
 import logging
@@ -14,6 +18,9 @@ import select
 import socket
 import threading
 import urllib.parse
+from contextlib import closing
+
+_RELAY_CHUNK = 65536
 
 
 def _recv_exact(sock: socket.socket, n: int) -> bytes:
@@ -56,15 +63,27 @@ def socks5_connect(sock: socket.socket, host: str, port: int) -> None:
     reply = _recv_exact(sock, 4)
     if reply[1] != 0x00:
         raise ConnectionError(f"socks5 CONNECT failed, reply code {reply[1]}")
-    atyp = reply[3]
-    if atyp == 0x01:
+    _consume_bound_address(sock, reply[3])
+
+
+def _consume_bound_address(sock: socket.socket, address_type: int) -> None:
+    if address_type == 0x01:
         _recv_exact(sock, 4 + 2)  # IPv4 + port
-    elif atyp == 0x03:
+    elif address_type == 0x03:
         _recv_exact(sock, _recv_exact(sock, 1)[0] + 2)  # domain len + name + port
-    elif atyp == 0x04:
+    elif address_type == 0x04:
         _recv_exact(sock, 16 + 2)  # IPv6 + port
     else:
-        raise ConnectionError(f"socks5 unknown bound address type {atyp}")
+        raise ConnectionError(f"socks5 unknown bound address type {address_type}")
+
+
+# scheme -> handshake, so the transport is chosen by lookup, not an if/elif chain
+_HANDSHAKES = {
+    "http": http_connect,
+    "https": http_connect,
+    "socks5": socks5_connect,
+    "socks5h": socks5_connect,
+}
 
 
 class ProxyTunnel:
@@ -76,6 +95,9 @@ class ProxyTunnel:
         self, proxy_url: str, dest_host: str, dest_port: int, timeout: int = 15
     ):
         self._proxy = urllib.parse.urlsplit(proxy_url)
+        self._handshake = _HANDSHAKES.get(self._proxy.scheme)
+        if self._handshake is None:
+            raise ValueError(f"unsupported proxy scheme {self._proxy.scheme!r}")
         self._dest = (dest_host, dest_port)
         self._timeout = timeout
         self._listener = None
@@ -97,50 +119,59 @@ class ProxyTunnel:
 
     def _serve(self) -> None:
         while not self._closed:
-            try:
-                client, _ = self._listener.accept()
-            except (TimeoutError, socket.timeout):
+            client = self._accept()
+            if client is None:
                 continue
-            except OSError:
-                break
             threading.Thread(target=self._handle, args=(client,), daemon=True).start()
 
-    def _handle(self, client: socket.socket) -> None:
+    def _accept(self):
+        # accept() with a timeout is the standard cooperative-shutdown pattern
         try:
-            upstream = self._dial()
-        except Exception as e:
-            logging.debug("tunnel dial failed: %s", e)
-            client.close()
-            return
-        self._pump(client, upstream)
+            client, _ = self._listener.accept()
+            return client
+        except (TimeoutError, socket.timeout):
+            return None
+        except OSError:
+            self._closed = True
+            return None
+
+    def _handle(self, client: socket.socket) -> None:
+        with closing(client):
+            upstream = self._dial_quietly()
+            if upstream is None:
+                return
+            with closing(upstream):
+                self._relay_quietly(client, upstream)
+
+    def _dial_quietly(self):
+        # one boundary catch: a failed dial must not crash the accept loop
+        try:
+            return self._dial()
+        except (OSError, ValueError) as error:
+            logging.debug("tunnel dial failed: %s", error)
+            return None
 
     def _dial(self) -> socket.socket:
         sock = socket.create_connection(
             (self._proxy.hostname, self._proxy.port), timeout=self._timeout
         )
-        host, port = self._dest
-        if self._proxy.scheme in ("socks5", "socks5h"):
-            socks5_connect(sock, host, port)
-        elif self._proxy.scheme in ("http", "https"):
-            http_connect(sock, host, port)
-        else:
-            sock.close()
-            raise ValueError(f"unsupported proxy scheme {self._proxy.scheme!r}")
+        self._handshake(sock, *self._dest)
         return sock
 
-    def _pump(self, a: socket.socket, b: socket.socket) -> None:
+    def _relay_quietly(self, a: socket.socket, b: socket.socket) -> None:
+        # a peer reset mid-relay is normal for a proxied stream, not an error
         try:
-            while True:
-                readable, _, _ = select.select([a, b], [], [], self._timeout * 2)
-                if not readable:
+            self._relay(a, b)
+        except OSError as error:
+            logging.debug("tunnel relay ended: %s", error)
+
+    def _relay(self, a: socket.socket, b: socket.socket) -> None:
+        while True:
+            readable, _, _ = select.select([a, b], [], [], self._timeout * 2)
+            if not readable:
+                return
+            for src in readable:
+                data = src.recv(_RELAY_CHUNK)
+                if not data:
                     return
-                for src in readable:
-                    data = src.recv(65536)
-                    if not data:
-                        return
-                    (b if src is a else a).sendall(data)
-        except OSError:
-            return
-        finally:
-            a.close()
-            b.close()
+                (b if src is a else a).sendall(data)

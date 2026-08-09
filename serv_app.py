@@ -28,13 +28,6 @@ def main():
         ua = dict(user_info.request.headers).get("User-Agent")
         st.write(f"You are: {ua} at {user_info.request.remote_ip}")
 
-    user_input = st.text_input("Add your shodan key to perform a live search", "")
-
-    if user_input:
-        ...
-        # cams_found = thread_add_cameras_on_db(user_input)
-        # st.write(cams_found)
-
     folder_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frames")
     os.makedirs(folder_path, exist_ok=True)
     cams = repository.get_active()

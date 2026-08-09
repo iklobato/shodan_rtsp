@@ -1,37 +1,34 @@
-"""2captcha residential proxy provider.
+"""2captcha residential proxy provider and an anonymised HTTP client.
 
-Whitelist mode (recommended for a scanner on a fixed box): the machine's
-public IPv4 must be added to the account whitelist in the 2captcha web
-dashboard first (there is no API for that step). Then the API hands back a
-ready http://ip:port that connects with no credentials from that IP.
+Whitelist mode (recommended for a scanner on a fixed box): the machine's public
+IPv4 must be added to the account whitelist in the 2captcha web dashboard first
+(there is no API for that step). Then the API hands back a ready http://ip:port
+that connects with no credentials from that IP.
 
-Login mode: username:password@host:port, where the username is read from the
-API and the host/port/password come from the dashboard (env-configured).
+Login mode: username:password@host:port, where the username is read from the API
+and the host/port/password come from the dashboard (env-configured).
 
-Run `python -m scanners.proxy` to generate and print a proxy URL.
+Run `python -m scanners.proxy` to generate a proxy and print the exit IP.
 """
 
-import http.client
+import importlib.util
 import json
 import logging
-import ssl
 import urllib.parse
 import urllib.request
+from contextlib import closing
+from http.client import HTTPConnection, HTTPSConnection
+from ssl import SSLContext, create_default_context
+from typing import Protocol
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-try:  # optional: matches the TLS (JA3/JA4) and HTTP/2 fingerprint to a browser
-    from curl_cffi import requests as _curl_requests
-except ImportError:  # falls back to the stdlib CONNECT client below
-    _curl_requests = None
 
 _API = "https://api.2captcha.com"
 _IP_ECHO = "https://api.ipify.org"
 
-# Browser header set for the stdlib fallback path (the curl backend supplies its
-# own coherent headers). A Windows Chrome UA is used because the residential exit
-# nodes 2captcha hands out read as Windows in their TCP fingerprint, so the story
-# is coherent instead of "python-urllib behind a home IP".
+# Browser header set for the stdlib fallback (the curl backend brings its own
+# coherent headers). A Windows Chrome UA matches the residential exit nodes,
+# whose TCP fingerprint reads as Windows, so the story stays coherent.
 _BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -48,6 +45,29 @@ _BROWSER_HEADERS = {
 }
 
 
+def _load_curl_requests():
+    """curl_cffi is optional: return its requests module, or None if absent.
+
+    find_spec (look before you leap) avoids a try/except around the import.
+    """
+    if importlib.util.find_spec("curl_cffi") is None:
+        return None
+    from curl_cffi import requests as curl_requests
+
+    return curl_requests
+
+
+_CURL_REQUESTS = _load_curl_requests()
+
+
+def requests_proxies(proxy_url: str) -> dict:
+    """A requests-style proxies dict. socks5 is upgraded to socks5h so DNS is
+    resolved at the exit, never by the local resolver."""
+    if proxy_url.startswith("socks5://"):
+        proxy_url = "socks5h://" + proxy_url[len("socks5://") :]
+    return {"http": proxy_url, "https": proxy_url}
+
+
 class TwoCaptchaSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -62,7 +82,7 @@ class TwoCaptchaSettings(BaseSettings):
 
 
 class TwoCaptchaProxy:
-    """Builds a proxy URL for outbound tools, self-configured from the API."""
+    """Resolves a proxy URL from the 2captcha API, self-configured from settings."""
 
     def __init__(
         self,
@@ -80,14 +100,10 @@ class TwoCaptchaProxy:
             self._cached_url = self._resolve_url()
         return self._cached_url
 
-    def requests_proxies(self) -> dict:
-        proxy_url = self.url()
-        return {"http": proxy_url, "https": proxy_url}
-
-    def client(self, **kwargs) -> "AnonymousProxyClient":
-        """An HTTP client that reaches a destination through this proxy
-        without revealing the proxy at the destination."""
-        return AnonymousProxyClient(self, **kwargs)
+    def client(self, fetcher: "Fetcher" = None) -> "AnonymousProxyClient":
+        """An HTTP client that reaches a destination through this proxy without
+        revealing the proxy at the destination."""
+        return AnonymousProxyClient(self, fetcher)
 
     def _resolve_url(self) -> str:
         if self._s.auth_mode == "login":
@@ -125,8 +141,8 @@ class TwoCaptchaProxy:
 
         Confirmed success shape: {"status":"OK","data":["http://ip:port", ...]}.
         The endpoint can also pack an error (e.g. a missing country) inside a
-        200 'data' list, so anything that is not a real connection falls
-        through and the raw body is raised instead of a silent wrong proxy.
+        200 'data' list, so anything that is not a real connection falls through
+        and the raw body is raised instead of a silent wrong proxy.
         """
         if data.get("status") != "OK":
             raise RuntimeError(f"2captcha proxy error: {data.get('message', data)}")
@@ -160,123 +176,127 @@ class TwoCaptchaProxy:
             return response.read().decode()
 
 
-class AnonymousProxyClient:
-    """Reaches a destination through the proxy without revealing the proxy.
+class Fetcher(Protocol):
+    """Performs one GET through the proxy, returning (status, body)."""
 
-    A naive proxy request leaks at three layers; this client closes all three
-    (each verified against a live capture, see tests/test_refactor.py):
+    def get(self, url: str) -> tuple[int, bytes]: ...
 
-    * L7 header injection. A plaintext HTTP request is *forwarded* by the proxy,
-      which lets it add ``Proxy-Host`` / ``Via`` / ``X-Forwarded-For`` to what
-      the destination reads. Both backends here only ever CONNECT-tunnel, so the
-      proxy sees ``CONNECT host:port`` and relays opaque bytes: it cannot inject.
-    * L7 header shape. The stdlib fallback sends a browser header set
-      (``_BROWSER_HEADERS``); the curl backend lets curl_cffi own the headers so
-      they stay internally coherent with the impersonated browser (UA, client
-      hints and JA3/JA4 all match one real Chrome build).
-    * TLS (below HTTP, end-to-end through the tunnel). OpenSSL's ClientHello has
-      a JA3/JA4 that reads as "not a browser", and it is the only sub-HTTP
-      fingerprint the client controls: IP TTL and the TCP handshake are the exit
-      node's, not ours, once the proxy re-originates the connection. When
-      ``curl_cffi`` is installed this client uses it with ``impersonate`` so the
-      JA3/JA4 and HTTP/2 fingerprint match a real browser; otherwise it falls
-      back to the stdlib CONNECT client (L7 clean, TLS still OpenSSL's).
 
-    Residual we cannot fix from here: the exit node's OS (seen in its TCP/IP
-    fingerprint) is not ours to choose, so it may differ from the impersonated
-    browser's OS. Matching them would need control of the exit, which a shared
-    residential pool does not give. Do NOT paper over it by editing the UA OS
-    token alone: that desyncs the UA from ``sec-ch-ua-platform`` and is a louder
-    tell than the OS mismatch itself.
-
-    SOCKS5 (``protocol=socks5`` in settings) works on the curl backend for free:
-    the url is upgraded to ``socks5h`` so DNS is resolved at the exit, not here.
-    The stdlib fallback is HTTP-CONNECT only and rejects a socks proxy.
-    """
+class CurlFetcher:
+    """Fetch through the proxy with a browser TLS (JA3/JA4) and HTTP/2
+    fingerprint, via curl_cffi's impersonation."""
 
     def __init__(
         self,
         proxy: TwoCaptchaProxy,
-        headers: dict = None,
-        timeout: int = 40,
-        ssl_context: ssl.SSLContext = None,
-        connection_factory=None,
+        curl_requests=_CURL_REQUESTS,
         impersonate: str = "chrome",
+        timeout: int = 40,
         verify: bool = True,
-        curl_backend=_curl_requests,
     ):
         self._proxy = proxy
-        self._headers = headers or dict(_BROWSER_HEADERS)
-        self._timeout = timeout
-        self._ssl_context = ssl_context or ssl.create_default_context()
-        self._new_conn = connection_factory or self._default_connection
+        self._curl = curl_requests
         self._impersonate = impersonate
+        self._timeout = timeout
         self._verify = verify
-        self._curl = curl_backend
 
     def get(self, url: str) -> tuple[int, bytes]:
-        if not urllib.parse.urlsplit(url).hostname:
-            raise ValueError(f"url has no host: {url}")
-        if self._curl is not None:
-            return self._get_curl(url)
-        return self._get_stdlib(url)
-
-    def _get_curl(self, url: str) -> tuple[int, bytes]:
         response = self._curl.get(
             url,
-            proxies=self._proxies(),
+            proxies=requests_proxies(self._proxy.url()),
             impersonate=self._impersonate,
             timeout=self._timeout,
             verify=self._verify,
         )
         return response.status_code, response.content
 
-    def _get_stdlib(self, url: str) -> tuple[int, bytes]:
+
+class ConnectFetcher:
+    """Dependency-free fallback: always CONNECT-tunnels so the proxy relays
+    opaque bytes and cannot inject Proxy-Host / Via / X-Forwarded-For, and sends
+    a browser header set. TLS stays OpenSSL's; http proxies only (socks5 needs
+    the curl backend)."""
+
+    def __init__(
+        self,
+        proxy: TwoCaptchaProxy,
+        headers: dict = None,
+        timeout: int = 40,
+        ssl_context: SSLContext = None,
+        connection_factory=None,
+    ):
+        self._proxy = proxy
+        self._headers = headers or dict(_BROWSER_HEADERS)
+        self._timeout = timeout
+        self._ssl_context = ssl_context or create_default_context()
+        self._new_connection = connection_factory or self._connection
+
+    def get(self, url: str) -> tuple[int, bytes]:
         proxy = urllib.parse.urlsplit(self._proxy.url())
         if proxy.scheme not in ("http", "https"):
             raise ValueError(
                 f"stdlib backend needs an http proxy, got {proxy.scheme!r}; "
                 "install curl_cffi for socks5"
             )
-        dest = urllib.parse.urlsplit(url)
-        port = dest.port or (443 if dest.scheme == "https" else 80)
-        path = dest.path or "/"
-        if dest.query:
-            path = f"{path}?{dest.query}"
-
-        conn = self._new_conn(dest.scheme, proxy.hostname, proxy.port)
-        conn.set_tunnel(dest.hostname, port)  # CONNECT: proxy can't read/inject L7
-        headers = {"Host": dest.hostname, **self._headers}
-        try:
-            conn.request("GET", path, headers=headers)
-            response = conn.getresponse()
+        destination = urllib.parse.urlsplit(url)
+        port = destination.port or (443 if destination.scheme == "https" else 80)
+        path = destination.path or "/"
+        if destination.query:
+            path = f"{path}?{destination.query}"
+        connection = self._new_connection(
+            destination.scheme, proxy.hostname, proxy.port
+        )
+        with closing(connection):
+            connection.set_tunnel(destination.hostname, port)
+            connection.request(
+                "GET", path, headers={"Host": destination.hostname, **self._headers}
+            )
+            response = connection.getresponse()
             return response.status, response.read()
-        finally:
-            conn.close()
 
-    def _proxies(self) -> dict:
-        url = self._proxy.url()
-        if url.startswith("socks5://"):  # socks5h -> the exit resolves DNS, not us
-            url = "socks5h://" + url[len("socks5://") :]
-        return {"http": url, "https": url}
-
-    def _default_connection(self, scheme: str, proxy_host: str, proxy_port: int):
+    def _connection(self, scheme: str, proxy_host: str, proxy_port: int):
         if scheme == "https":
-            return http.client.HTTPSConnection(
+            return HTTPSConnection(
                 proxy_host, proxy_port, timeout=self._timeout, context=self._ssl_context
             )
-        return http.client.HTTPConnection(proxy_host, proxy_port, timeout=self._timeout)
+        return HTTPConnection(proxy_host, proxy_port, timeout=self._timeout)
+
+
+class AnonymousProxyClient:
+    """Reaches a destination through the proxy without revealing the proxy.
+
+    It composes a Fetcher strategy and closes what is ours to control:
+
+    * L7 injection: both fetchers CONNECT/tunnel, so the proxy relays opaque
+      bytes and cannot add Proxy-Host / Via / X-Forwarded-For.
+    * L7 shape and TLS: CurlFetcher impersonates a browser (JA3/JA4 + HTTP/2);
+      ConnectFetcher is the dependency-free fallback (browser headers, but the
+      TLS fingerprint stays OpenSSL's).
+
+    The exit node's IP TTL and TCP handshake are not ours to set once the proxy
+    re-originates the connection, so we leave them: they already read as the
+    residential exit, which is the point.
+    """
+
+    def __init__(self, proxy: TwoCaptchaProxy, fetcher: Fetcher = None):
+        self._proxy = proxy
+        self._fetcher = fetcher or self._default_fetcher()
+
+    def get(self, url: str) -> tuple[int, bytes]:
+        if not urllib.parse.urlsplit(url).hostname:
+            raise ValueError(f"url has no host: {url}")
+        return self._fetcher.get(url)
+
+    def _default_fetcher(self) -> Fetcher:
+        if _CURL_REQUESTS is not None:
+            return CurlFetcher(self._proxy)
+        return ConnectFetcher(self._proxy)
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     proxy = TwoCaptchaProxy()
     logging.info("Generated proxy: %s", proxy.url())
-    backend = "curl_cffi (browser JA3/H2)" if _curl_requests else "stdlib CONNECT"
+    backend = "curl_cffi (browser JA3/H2)" if _CURL_REQUESTS else "stdlib CONNECT"
     status, body = proxy.client().get("https://api.ipify.org")
-    logging.info(
-        "Exit IP seen by destination: %s (%s, via %s)",
-        body.decode().strip(),
-        status,
-        backend,
-    )
+    logging.info("Exit IP: %s (%s, via %s)", body.decode().strip(), status, backend)

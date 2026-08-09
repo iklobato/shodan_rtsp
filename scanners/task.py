@@ -125,9 +125,9 @@ class ShodanTask(Task):
                 cams_added += 1
             logging.info(f"{cams_added} cameras added")
         except APIError as e:
+            # only the Shodan boundary is caught here; a bug (bad banner shape)
+            # must surface, not be swallowed by a broad except
             logging.error(f"Shodan api error: {e}")
-        except Exception as e:
-            logging.error(f"Error: {e}")
 
 
 class CheckTask(Task):

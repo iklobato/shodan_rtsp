@@ -3,14 +3,14 @@ import logging
 from sqlalchemy import func
 
 from models.camera import Camera
-from models.database import Database
+from models.database import Database, default_database
 
 
 class CameraRepository:
     """Encapsulates every query against the camera table."""
 
     def __init__(self, database: Database = None):
-        self._db = database or Database()
+        self._db = database or default_database()
 
     def insert_camera(self, camera: Camera) -> None:
         camera.city = self._sanitize_city(camera.city)
