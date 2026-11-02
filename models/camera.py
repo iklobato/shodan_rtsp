@@ -1,65 +1,57 @@
-import logging
-import os
 from datetime import datetime
-from dotenv import load_dotenv
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
 
-load_dotenv()
+from sqlalchemy import Boolean, Column, DateTime, Index, Integer, String
+from sqlalchemy.orm import declarative_base
 
-
-class DatabaseConnectionSingleton(type):
-    _instances = {}
-
-    def __call__(cls, *args, **kwargs):
-        if cls not in cls._instances:
-            logging.debug('Singleton call if')
-            cls._instances[cls] = super(DatabaseConnectionSingleton, cls).__call__(*args, **kwargs)
-        return cls._instances[cls]
+Base = declarative_base()
 
 
-class DatabaseConnection(metaclass=DatabaseConnectionSingleton):
-    Base = declarative_base()
+class Face(Base):
+    """A detected face: bounding box + 128-d embedding + source camera."""
 
-    def __init__(self):
-        username = os.getenv('POSTGRES_USER')
-        password = os.getenv('POSTGRES_PASSWORD')
-        host = os.getenv('POSTGRES_HOST')
-        database = os.getenv('POSTGRES_DB')
-        connection_string = f'postgresql://{username}:{password}@{host}/{database}'
-        self.engine = create_engine(connection_string)
-        self.Session = None
+    __tablename__ = "faces"
+    __table_args__ = (Index("ix_faces_camera_id", "camera_id"),)
 
-    @property
-    def session(self):
-        if self.Session is None:
-            self.Session = sessionmaker(bind=self.engine)
-        return self.Session()
-
-    @classmethod
-    def base(cls):
-        return cls.Base
-
-
-class Camera(DatabaseConnection.base()):
-    __tablename__ = 'cam'
     id = Column(Integer, primary_key=True)
+    camera_id = Column(Integer, nullable=False)
+    frame_id = Column(Integer, nullable=True)  # optional link to face_frames
+    embedding = Column(String)  # 128 floats comma-separated
+    bbox_top = Column(Integer)
+    bbox_left = Column(Integer)
+    bbox_bottom = Column(Integer)
+    bbox_right = Column(Integer)
+    confidence = Column(String, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
 
+
+class FaceFrame(Base):
+    """A saved frame from an active camera (multi-frame capture)."""
+
+    __tablename__ = "face_frames"
+
+    id = Column(Integer, primary_key=True)
+    camera_id = Column(Integer, nullable=False)
+    image_b64 = Column(String)
+    captured_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Camera(Base):
+    __tablename__ = "cam"
+
+    id = Column(Integer, primary_key=True)
     ip = Column(String)
     port = Column(Integer)
-    user = Column(String, default='')
-    password = Column(String, default='')
-    url = Column(String, default='')
+    user = Column(String, default="")
+    password = Column(String, default="")
+    url = Column(String, default="")
     active = Column(Boolean, default=False)
-    city = Column(String, default='')
-    country_code = Column(String, default='')
-    country_name = Column(String, default='')
-    region_code = Column(String, default='')
-    image_b64 = Column(String, default='')
+    city = Column(String, default="")
+    country_code = Column(String, default="")
+    country_name = Column(String, default="")
+    region_code = Column(String, default="")
+    image_b64 = Column(String, default="")
     added_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def __repr__(self):
-        return f'<Camera {self.ip}:{self.port} ({self.city}, {self.country_code}) - {self.active}>'
-
+        return f"<Camera {self.ip}:{self.port} ({self.city}, {self.country_code}) - {self.active}>"
