@@ -306,16 +306,27 @@ class ComboBuilder:
     """Builds (user, password, url_template) combos for a camera."""
 
     @classmethod
-    def build(cls, cfg: BrandProbeConfig) -> list[tuple[str, str, str]]:
-        brand = BrandDetector().detect(cfg.config.wordlist_users)
+    def build(
+        cls, cfg: BrandProbeConfig, banner: str | None = None
+    ) -> list[tuple[str, str, str]]:
+        brand = BrandDetector().detect(banner or "")
         seen: set[tuple[str, str, str]] = set()
         combos: list[tuple[str, str, str]] = []
         BrandCredentialLoader.init()
+        cls._lookup_brand(brand, seen, combos)
+        cls._add_generic(cfg.config, seen, combos)
+        return combos
+
+    @classmethod
+    def _lookup_brand(
+        cls,
+        brand: str | None,
+        seen: set[tuple[str, str, str]],
+        combos: list[tuple[str, str, str]],
+    ) -> None:
         brand_creds = BrandCredentialLoader.lookup(brand) if brand else None
         if brand_creds:
             cls._add_brand(brand_creds, seen, combos)
-        cls._add_generic(cfg.config, seen, combos)
-        return combos
 
     @classmethod
     def _add_brand(
@@ -324,7 +335,7 @@ class ComboBuilder:
         seen: set[tuple[str, str, str]],
         combos: list[tuple[str, str, str]],
     ) -> None:
-        _UserComboAdder(creds, seen, combos).add_all()
+        _UserComboAdder(creds, seen, combos).execute()
 
     @classmethod
     def _add_generic(
@@ -333,10 +344,11 @@ class ComboBuilder:
         seen: set[tuple[str, str, str]],
         combos: list[tuple[str, str, str]],
     ) -> None:
-        users = cls._read_lines(config.wordlist_users)
-        passwords = cls._read_lines(config.wordlist_passwords)
-        url_templates = cls._read_lines(config.wordlist_rtsp_urls)
-        _GenericComboAdder(users, passwords, url_templates, seen, combos).add_all()
+        builder = cls.__new__(cls)
+        users = builder._read_lines(config.wordlist_users)
+        passwords = builder._read_lines(config.wordlist_passwords)
+        url_templates = builder._read_lines(config.wordlist_rtsp_urls)
+        _GenericComboAdder(users, passwords, url_templates, seen, combos).execute()
 
     def _read_lines(self, path_str: str) -> list[str]:
         return Path(path_str).read_text(encoding="utf-8").splitlines()
@@ -507,13 +519,14 @@ class BrandProbe:
         self,
         camera_ip: str,
         camera_port: int,
+        banner: str | None = None,
     ) -> list[tuple[str, str, str]]:
         cfg = BrandProbeConfig(
             config=self._config,
             camera_ip=camera_ip,
             camera_port=camera_port,
         )
-        return ComboBuilder.build(cfg)
+        return ComboBuilder.build(cfg, banner)
 
 
 if __name__ == "__main__":
