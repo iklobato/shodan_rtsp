@@ -1,0 +1,25 @@
+# Product string a scan reports -> CPE vendor:product.
+#
+# Keys are matched case-insensitively against the `product` field nmap's -sV
+# fills in (Shodan reports the same field). Values are the vendor and product
+# fields of a CPE 2.3 name, exactly the two fields an NVD cpeMatch criteria
+# carries:
+#
+#   cpe:2.3:a:<vendor>:<product>:<version>:...
+#
+# Supporting a new product is a line here, never a code change.
+#
+# Confirm the name in the NVD dictionary before adding it, or the CVEs you find
+# belong to a different product. totalResults above 0 means the name is real:
+#
+#   curl -sG 'https://services.nvd.nist.gov/rest/json/cpes/2.0' \
+#     --data-urlencode 'cpeMatchString=cpe:2.3:a:<vendor>:<product>' \
+#     --data-urlencode 'resultsPerPage=1'
+products:
+  OpenSSH: "openbsd:openssh"
+  nginx: "nginx:nginx"
+  Apache httpd: "apache:http_server"
+  Linux Kernel: "linux:linux_kernel"
+  Caddy: "caddyserver:caddy"
+  CUPS: "openprinting:cups"
+  BIND: "isc:bind"

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<?xml-stylesheet href="file:///usr/local/bin/../share/nmap/nmap.xsl" type="text/xsl"?>
+<!-- Hand-written sample, not a real scan: three hosts that show one match, one
+     match on a second product, and one service that matches nothing. Copy it to
+     logs/nmap.xml to try the vuln scan mode without scanning a network. -->
+<nmaprun scanner="nmap" args="nmap -sV -oX logs/nmap.xml 10.0.0.0/24" start="1762041600" startstr="Sat Nov 1 20:00:00 2025" version="7.95" xmloutputversion="1.05">
+<scaninfo type="syn" protocol="tcp" numservices="3" services="22,80,554"/>
+<verbose level="0"/>
+<debugging level="0"/>
+<host starttime="1762041601" endtime="1762041620"><status state="up" reason="syn-ack" reason_ttl="0"/>
+<address addr="10.0.0.5" addrtype="ipv4"/>
+<hostnames>
+</hostnames>
+<ports><port protocol="tcp" portid="22"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="ssh" product="OpenSSH" version="9.2" extrainfo="Ubuntu Linux; protocol 2.0" ostype="Linux" method="probed" conf="10"><cpe>cpe:/a:openbsd:openssh:9.2</cpe><cpe>cpe:/o:linux:linux_kernel</cpe></service></port>
+<port protocol="tcp" portid="554"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="rtsp" method="probed" conf="10"><cpe>cpe:/a:hikvision:ip_camera</cpe></service></port>
+</ports>
+<times srtt="2142" rttvar="1250" to="100000"/>
+</host>
+<host starttime="1762041602" endtime="1762041622"><status state="up" reason="syn-ack" reason_ttl="0"/>
+<address addr="10.0.0.7" addrtype="ipv4"/>
+<hostnames>
+</hostnames>
+<ports><port protocol="tcp" portid="80"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="http" product="Apache httpd" version="2.4.49" method="probed" conf="10"><cpe>cpe:/a:apache:http_server:2.4.49</cpe></service></port>
+<port protocol="tcp" portid="554"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="rtsp" method="probed" conf="10"><cpe>cpe:/a:hikvision:ip_camera</cpe></service></port>
+</ports>
+<times srtt="3011" rttvar="1500" to="100000"/>
+</host>
+<host starttime="1762041603" endtime="1762041625"><status state="up" reason="syn-ack" reason_ttl="0"/>
+<address addr="10.0.0.9" addrtype="ipv4"/>
+<hostnames>
+</hostnames>
+<ports><port protocol="tcp" portid="554"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="rtsp" method="probed" conf="10"><cpe>cpe:/a:hikvision:ip_camera</cpe></service></port>
+</ports>
+<times srtt="1820" rttvar="980" to="100000"/>
+</host>
+<runstats><finished time="1762041630" timestr="Sat Nov 1 20:00:30 2025" elapsed="30.12" summary="Nmap done at Sat Nov 1 20:00:30 2025; 256 IP addresses (3 hosts up) scanned in 30.12 seconds" exit="success"/><hosts up="3" down="253" total="256"/></runstats>
+</nmaprun>

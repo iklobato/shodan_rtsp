@@ -3,9 +3,11 @@ import os
 from argparse import ArgumentParser
 
 from scanners.config import AppConfig, load_config
+from scanners.face_task import FaceScanTask
 from scanners.proxy import TwoCaptchaProxy
 from scanners.rtsp_probe import RtspProbe
 from scanners.task import CheckTask, NmapTask, ShodanTask
+from scanners.vuln_task import VulnScanTask
 
 __version__ = "0.1.0"
 
@@ -34,6 +36,20 @@ def parse_args():
         const="nmap",
         help="Start nmap scan",
     )
+    group.add_argument(
+        "--start_face_scan",
+        dest="mode",
+        action="store_const",
+        const="face_scan",
+        help="Start face scan on active cameras",
+    )
+    group.add_argument(
+        "--start_vuln_scan",
+        dest="mode",
+        action="store_const",
+        const="vuln_scan",
+        help="Report the CVEs of the services in an nmap XML run",
+    )
     parser.add_argument(
         "--config",
         action="store",
@@ -58,28 +74,48 @@ def _configure_logging(verbose: bool) -> None:
     )
 
 
-def _build_search(config: AppConfig):
-    return ShodanTask(config.shodan)
+class TaskFactory:
+    """Creates scanner task instances from config."""
 
+    def build_search(config: AppConfig) -> ShodanTask:
+        return ShodanTask(config.shodan)
 
-def _build_check(config: AppConfig):
-    # RTSP probe through the proxy so the login and frame grab leave via the
-    # residential exit, not the local IP.
-    probe = RtspProbe(proxy=TwoCaptchaProxy(config.proxy))
-    return CheckTask(config.checkers, probe=probe)
+    def build_check(config: AppConfig) -> CheckTask:
+        proxy = TaskFactory._proxy(config)
+        return CheckTask(config.checkers, probe=RtspProbe(proxy=proxy))
 
+    def build_nmap(config: AppConfig) -> NmapTask:
+        # nmap --proxies cannot use socks5, so give it an http proxy regardless
+        # of the configured transport (which may be socks5 for the HTTP client).
+        proxy = TaskFactory._proxy(config, protocol_update={"protocol": "http"})
+        return NmapTask(config.nmap, proxy)
 
-def _build_nmap(config: AppConfig):
-    # nmap --proxies cannot use socks5, so give it an http proxy regardless of
-    # the configured transport (which may be socks5 for the HTTP client).
-    http_proxy = TwoCaptchaProxy(config.proxy.model_copy(update={"protocol": "http"}))
-    return NmapTask(config.nmap, http_proxy)
+    def _proxy(
+        config: AppConfig, protocol_update: dict = None
+    ) -> TwoCaptchaProxy | None:
+        """The configured proxy, or None when proxy.enabled is false (direct)."""
+        if not config.proxy.enabled:
+            return None
+        proxy_config = (
+            config.proxy.model_copy(update=protocol_update)
+            if protocol_update
+            else config.proxy
+        )
+        return TwoCaptchaProxy(proxy_config)
+
+    def build_face_scan(config: AppConfig) -> FaceScanTask:
+        return FaceScanTask.from_config(config)
+
+    def build_vuln_scan(config: AppConfig) -> VulnScanTask:
+        return VulnScanTask.from_config(config)
 
 
 _TASK_BUILDERS = {
-    "search": _build_search,
-    "check": _build_check,
-    "nmap": _build_nmap,
+    "search": TaskFactory.build_search,
+    "check": TaskFactory.build_check,
+    "nmap": TaskFactory.build_nmap,
+    "face_scan": TaskFactory.build_face_scan,
+    "vuln_scan": TaskFactory.build_vuln_scan,
 }
 
 
