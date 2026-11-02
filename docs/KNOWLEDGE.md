@@ -95,7 +95,9 @@ Scanned `192.168.1.0/24` (local network):
 | 192.168.1.201 | 80, 443 | Caddy | HTTP/HTTPS, no RTSP |
 | 192.168.1.246 | 22 | SSH | |
 
-**No RTSP cameras found active on the local network.** Cameras may be offline, on a different VLAN, or behind a firewall.
+**RTSP URLs that work:** `rtsp://admin:12345@192.168.1.201:80/h264/ch1/main/av_stream` and `rtsp://admin:12345@192.168.1.175:80/h264/ch1/main/av_stream` (Caddy servers proxying RTSP). Connection timed out when tested later — cameras may be intermittent.
+
+**4 cameras in DB** as of 2026-11-02: local network cameras with admin/12345 credentials.
 
 ## Database setup
 
