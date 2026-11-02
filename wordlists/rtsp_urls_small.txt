@@ -1,0 +1,5 @@
+rtsp://{0}:{1}@{2}:{3}/
+rtsp://{0}:{1}@{2}:{3}/live.sdp
+rtsp://{0}:{1}@{2}:{3}/h264/ch1/main/av_stream
+rtsp://{0}:{1}@{2}:{3}/cam/realmonitor?channel=1&subtype=0
+rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101

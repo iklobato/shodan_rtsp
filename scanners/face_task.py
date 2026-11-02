@@ -1,0 +1,261 @@
+"""Face scan task: capture frames from active cameras, detect faces, store embeddings."""
+
+import logging
+import time
+from dataclasses import dataclass, field
+
+import cv2
+import numpy as np
+
+from models.camera import Camera as CameraModel
+from models.database import Database
+from models.managers import CameraRepository
+from scanners.config import AppConfig, FaceConfig
+from scanners.face_recognizer import (
+    DetectedFace,
+    FaceMatch,
+    FaceRecognizer,
+    KnownEmbedding,
+)
+from scanners.proxy import TwoCaptchaProxy
+from scanners.rtsp_probe import RtspProbe, RtspTarget
+from scanners.task import Task
+
+_BBOX_Y: int = 0
+_BBOX_X: int = 1
+_BBOX_H: int = 2
+_BBOX_W: int = 3
+
+
+@dataclass(frozen=True)
+class FaceScanDeps:
+    """Dependency injection container for FaceScanTask."""
+
+    config: AppConfig = field(repr=False)
+    probe: RtspProbe | None = None
+    repository: CameraRepository | None = None
+    database: Database | None = None
+    recognizer: FaceRecognizer | None = None
+
+
+@dataclass(frozen=True)
+class FrameInput:
+    """Parameters for frame-level processing."""
+
+    frame: np.ndarray
+    camera: CameraModel
+    known_faces: list[KnownEmbedding]
+    all_matches: list[FaceMatch]
+    frame_idx: int
+    num_frames: int
+    interval: float
+
+
+@dataclass(frozen=True)
+class StoreBatch:
+    """Parameters for face storage batch."""
+
+    camera: CameraModel
+    known_faces: list[KnownEmbedding]
+    all_matches: list[FaceMatch]
+    frame: np.ndarray
+
+
+class FaceScanTask(Task):
+    """Capture frames from active cameras, detect faces, match against known faces."""
+
+    def __init__(
+        self,
+        deps: FaceScanDeps,
+    ) -> None:
+        self._deps = deps
+
+    @classmethod
+    def from_config(cls, config: AppConfig) -> "FaceScanTask":
+        return cls(
+            deps=FaceScanDeps(
+                config=config,
+                repository=CameraRepository(),
+            )
+        )
+
+    @property
+    def _s(self) -> FaceConfig:
+        return self._deps.config.face
+
+    @property
+    def _probe(self) -> RtspProbe:
+        if self._deps.probe is None:
+            self._deps = self._deps._replace(
+                probe=RtspProbe(proxy=TwoCaptchaProxy(self._deps.config.proxy))
+            )
+        return self._deps.probe
+
+    @property
+    def _database(self) -> Database:
+        if self._deps.database is None:
+            self._deps = self._deps._replace(
+                database=Database(self._deps.config.database)
+            )
+        return self._deps.database
+
+    @property
+    def _recognizer(self) -> FaceRecognizer:
+        if self._deps.recognizer is None:
+            self._deps = self._deps._replace(
+                recognizer=FaceRecognizer(self._deps.config.face)
+            )
+        return self._deps.recognizer
+
+    def scan_active_cameras(self) -> None:
+        if not self._s.enabled:
+            logging.info("Face scan disabled")
+            return
+        self._run_scan()
+
+    def _run_scan(self) -> None:
+        cameras = self.repository.get_active()
+        if not cameras:
+            logging.info("No active cameras to scan")
+            return
+        known_faces = self._get_all_known_embeddings()
+        logging.info(
+            "Scanning %d cameras, %d known faces",
+            len(cameras),
+            len(known_faces),
+        )
+        for camera in cameras:
+            matches = self._scan_camera(camera, known_faces)
+            if matches:
+                logging.info(
+                    "Camera %s:%d matched %d faces",
+                    camera.ip,
+                    camera.port,
+                    len(matches),
+                )
+
+    def _scan_camera(
+        self,
+        camera: CameraModel,
+        known_faces: list[KnownEmbedding],
+    ) -> list[FaceMatch]:
+        all_matches: list[FaceMatch] = []
+        self._capture_loop(camera, known_faces, all_matches)
+        return all_matches
+
+    def _capture_loop(
+        self,
+        camera: CameraModel,
+        known_faces: list[KnownEmbedding],
+        all_matches: list[FaceMatch],
+    ) -> None:
+        for idx in range(self._s.frames_per_scan):
+            frame = self._capture_frame(camera)
+            if frame is not None:
+                self._process_frame(
+                    FrameInput(
+                        frame=frame,
+                        camera=camera,
+                        known_faces=known_faces,
+                        all_matches=all_matches,
+                        frame_idx=idx,
+                        num_frames=self._s.frames_per_scan,
+                        interval=self._s.frame_interval,
+                    )
+                )
+
+    def _process_frame(self, input: FrameInput) -> None:
+        faces = self._recognizer.detect(input.frame)
+        if not faces:
+            self._save_frame(input.camera, input.frame)
+            if input.frame_idx > 0:
+                time.sleep(input.interval)
+            return
+        self._store_batch(
+            StoreBatch(
+                camera=input.camera,
+                known_faces=input.known_faces,
+                all_matches=input.all_matches,
+                frame=input.frame,
+            ),
+            faces,
+        )
+        if input.frame_idx < input.num_frames - 1:
+            time.sleep(input.interval)
+
+    def _store_batch(
+        self,
+        batch: StoreBatch,
+        faces: list[DetectedFace],
+    ) -> None:
+        if self._s.save_frames:
+            self._save_frame(batch.camera, batch.frame)
+        for face in faces:
+            matches = self._recognizer.match_against(face.embedding, batch.known_faces)
+            batch.all_matches.extend(matches)
+            self._store_face(batch.camera, face)
+
+    def _capture_frame(self, camera: CameraModel) -> np.ndarray | None:
+        target = RtspTarget(
+            host=camera.ip,
+            port=camera.port,
+            user=camera.user,
+            password=camera.password,
+            url_template=camera.url,
+        )
+        probe_result = self._probe.probe(target)
+        if probe_result is None or probe_result.image_b64 is None:
+            return None
+        frame_bytes = bytes.fromhex(probe_result.image_b64)
+        return self._decode_frame(frame_bytes)
+
+    def _decode_frame(self, frame_bytes: bytes) -> np.ndarray | None:
+        np_arr = np.frombuffer(frame_bytes, dtype=np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        if frame is None:
+            return None
+        return frame
+
+    def _save_frame(self, camera: CameraModel, frame: np.ndarray | None) -> None:
+        if frame is None:
+            return
+        ok, encoded = cv2.imencode(".jpg", frame)
+        if not ok:
+            return
+        with self._database.session_scope() as session:
+            from models.camera import FaceFrame
+
+            face_frame = FaceFrame(
+                camera_id=camera.id,
+                image_b64=encoded.tobytes().hex(),
+            )
+            session.add(face_frame)
+
+    def _store_face(self, camera: CameraModel, face: DetectedFace) -> None:
+        with self._database.session_scope() as session:
+            from models.camera import Face
+
+            face_record = Face(
+                camera_id=camera.id,
+                embedding=self._recognizer.embedding_to_str(face.embedding),
+                bbox_top=face.bbox[_BBOX_Y],
+                bbox_left=face.bbox[_BBOX_X],
+                bbox_bottom=face.bbox[_BBOX_H],
+                bbox_right=face.bbox[_BBOX_W],
+                confidence=str(face.confidence),
+            )
+            session.add(face_record)
+
+    def _get_all_known_embeddings(self) -> list[KnownEmbedding]:
+        with self._database.session_scope() as session:
+            from models.camera import Face
+
+            records = session.query(Face).all()
+            return [
+                KnownEmbedding(
+                    face_id=fld.id,
+                    camera_id=fld.camera_id,
+                    embed_str=fld.embedding,
+                )
+                for fld in records
+            ]
