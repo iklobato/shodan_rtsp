@@ -7,6 +7,7 @@ suite runs without the scanning stack installed.
 """
 
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine
@@ -15,7 +16,7 @@ from sqlalchemy.pool import StaticPool
 
 from models.camera import Base, Camera
 from models.managers import CameraRepository
-from scanners.config import CheckersConfig, ProxyConfig, load_config
+from scanners.config import CheckersConfig, NmapConfig, ProxyConfig, load_config
 from scanners.proxy import (
     AnonymousProxyClient,
     ConnectFetcher,
@@ -318,19 +319,100 @@ def test_default_transport_selects_by_proxy():
 
 # --- tasks (need the scanning stack) -------------------------------------
 
+_RTSP_PORT = 554
+_NMAP_XML_NAME = "nmap.xml"
+
+
+class _StubNmapScanner:
+    """Fake nmap: records the arguments and replays a canned scan result."""
+
+    def __init__(self, hosts: dict, xml: bytes = b"") -> None:
+        self.arguments: str | None = None
+        self._hosts = hosts
+        self._xml = xml
+
+    def scan(self, hosts: str, arguments: str) -> dict:
+        self.arguments = arguments
+        return {"scan": self._hosts}
+
+    def get_nmap_last_output(self) -> bytes:
+        return self._xml
+
+
+class _RecordingRepository:
+    """Fake CameraRepository that keeps what was inserted."""
+
+    def __init__(self) -> None:
+        self.stored: list[tuple[str, int]] = []
+
+    def insert_camera(self, camera: Camera) -> None:
+        self.stored.append((camera.ip, camera.port))
+
 
 def test_nmap_task_rejects_socks5_proxy():
     pytest.importorskip("nmap")
-    from scanners.config import NmapConfig
-    from scanners.task import NmapTask
+    from scanners.task import NmapTask, UnsupportedProxySchemeError
 
     class _SocksProxy:
         def url(self):
             return "socks5://1.2.3.4:1080"
 
     task = NmapTask(NmapConfig(ip_range="10.0.0.0/30"), _SocksProxy())
-    with pytest.raises(ValueError, match="socks5"):
+    with pytest.raises(UnsupportedProxySchemeError, match="socks5"):
         task._scan("10.0.0.1")  # guard fires before any real scan runs
+
+
+def test_nmap_task_scans_direct_without_proxy(tmp_path: Path) -> None:
+    """proxy.enabled false gives NmapTask no proxy: nmap must run un-proxied."""
+    pytest.importorskip("nmap")
+    from scanners.task import NmapTask
+
+    scanner = _StubNmapScanner({})
+    task = NmapTask(
+        NmapConfig(ip_range="10.0.0.0/30", xml_path=str(tmp_path / _NMAP_XML_NAME)),
+        None,
+    )
+    task.scanner = scanner
+    task.run()
+    assert scanner.arguments == f"-p {_RTSP_PORT} -sV"
+
+
+def test_nmap_task_stores_open_ports_only(tmp_path: Path) -> None:
+    """A live host with 554 closed must not land in the DB as a camera."""
+    pytest.importorskip("nmap")
+    from scanners.task import NmapTask
+
+    scanner = _StubNmapScanner(
+        {
+            "10.0.0.1": {"tcp": {_RTSP_PORT: {"state": "closed"}}},
+            "10.0.0.2": {"tcp": {_RTSP_PORT: {"state": "open"}}},
+        }
+    )
+    repository = _RecordingRepository()
+    task = NmapTask(
+        NmapConfig(ip_range="10.0.0.0/30", xml_path=str(tmp_path / _NMAP_XML_NAME)),
+        None,
+        repository,
+    )
+    task.scanner = scanner
+    task.run()
+    assert repository.stored == [("10.0.0.2", _RTSP_PORT)]
+
+
+def test_nmap_task_keeps_the_run_xml(tmp_path: Path) -> None:
+    """The vuln mode reads this file, so the run must leave it on disk."""
+    pytest.importorskip("nmap")
+    from scanners.task import NmapTask
+
+    xml = b'<nmaprun><host><address addr="10.0.0.2"/></host></nmaprun>'
+    task = NmapTask(
+        NmapConfig(ip_range="10.0.0.0/30", xml_path=str(tmp_path / _NMAP_XML_NAME)),
+        None,
+        _RecordingRepository(),
+    )
+    task.scanner = _StubNmapScanner({}, xml=xml)
+    task.run()
+    assert (tmp_path / _NMAP_XML_NAME).read_bytes() == xml
 
 
 def test_shodan_banner_ignores_extra_and_coerces():

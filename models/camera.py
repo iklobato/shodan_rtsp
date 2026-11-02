@@ -1,9 +1,38 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String
+from sqlalchemy import Boolean, Column, DateTime, Index, Integer, String
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
+
+
+class Face(Base):
+    """A detected face: bounding box + 128-d embedding + source camera."""
+
+    __tablename__ = "faces"
+    __table_args__ = (Index("ix_faces_camera_id", "camera_id"),)
+
+    id = Column(Integer, primary_key=True)
+    camera_id = Column(Integer, nullable=False)
+    frame_id = Column(Integer, nullable=True)  # optional link to face_frames
+    embedding = Column(String)  # 128 floats comma-separated
+    bbox_top = Column(Integer)
+    bbox_left = Column(Integer)
+    bbox_bottom = Column(Integer)
+    bbox_right = Column(Integer)
+    confidence = Column(String, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FaceFrame(Base):
+    """A saved frame from an active camera (multi-frame capture)."""
+
+    __tablename__ = "face_frames"
+
+    id = Column(Integer, primary_key=True)
+    camera_id = Column(Integer, nullable=False)
+    image_b64 = Column(String)
+    captured_at = Column(DateTime, default=datetime.utcnow)
 
 
 class Camera(Base):

@@ -2,7 +2,7 @@
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import cv2
 import numpy as np
@@ -32,8 +32,10 @@ class FaceScanDeps:
     """Dependency injection container for FaceScanTask."""
 
     config: AppConfig = field(repr=False)
+    # Not optional: this task's whole job is walking the active cameras, so a
+    # deps without a repository cannot do anything.
+    repository: CameraRepository
     probe: RtspProbe | None = None
-    repository: CameraRepository | None = None
     database: Database | None = None
     recognizer: FaceRecognizer | None = None
 
@@ -64,20 +66,13 @@ class StoreBatch:
 class FaceScanTask(Task):
     """Capture frames from active cameras, detect faces, match against known faces."""
 
-    def __init__(
-        self,
-        deps: FaceScanDeps,
-    ) -> None:
+    def __init__(self, deps: FaceScanDeps) -> None:
         self._deps = deps
 
     @classmethod
     def from_config(cls, config: AppConfig) -> "FaceScanTask":
-        return cls(
-            deps=FaceScanDeps(
-                config=config,
-                repository=CameraRepository(),
-            )
-        )
+        deps = FaceScanDeps(config=config, repository=CameraRepository())
+        return cls(deps=deps)
 
     @property
     def _s(self) -> FaceConfig:
@@ -86,24 +81,24 @@ class FaceScanTask(Task):
     @property
     def _probe(self) -> RtspProbe:
         if self._deps.probe is None:
-            self._deps = self._deps._replace(
-                probe=RtspProbe(proxy=TwoCaptchaProxy(self._deps.config.proxy))
-            )
+            proxy_config = self._deps.config.proxy
+            proxy = TwoCaptchaProxy(proxy_config) if proxy_config.enabled else None
+            self._deps = replace(self._deps, probe=RtspProbe(proxy=proxy))
         return self._deps.probe
 
     @property
     def _database(self) -> Database:
         if self._deps.database is None:
-            self._deps = self._deps._replace(
-                database=Database(self._deps.config.database)
+            self._deps = replace(
+                self._deps, database=Database(self._deps.config.database)
             )
         return self._deps.database
 
     @property
     def _recognizer(self) -> FaceRecognizer:
         if self._deps.recognizer is None:
-            self._deps = self._deps._replace(
-                recognizer=FaceRecognizer(self._deps.config.face)
+            self._deps = replace(
+                self._deps, recognizer=FaceRecognizer(self._deps.config.face)
             )
         return self._deps.recognizer
 
@@ -113,8 +108,12 @@ class FaceScanTask(Task):
             return
         self._run_scan()
 
+    # Task declares run() abstract and the CLI calls it; the mode's own name is
+    # scan_active_cameras, which says what this task does where "run" does not.
+    run = scan_active_cameras
+
     def _run_scan(self) -> None:
-        cameras = self.repository.get_active()
+        cameras = self._deps.repository.get_active()
         if not cameras:
             logging.info("No active cameras to scan")
             return

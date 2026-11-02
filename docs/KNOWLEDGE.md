@@ -1,6 +1,6 @@
 # Shodan RTSP Scanner — Knowledge
 
-Last updated: 2026-11-02 (session).
+Last updated: 2026-11-02 (local-network run).
 
 ## What the project does
 
@@ -95,9 +95,18 @@ Scanned `192.168.1.0/24` (local network):
 | 192.168.1.201 | 80, 443 | Caddy | HTTP/HTTPS, no RTSP |
 | 192.168.1.246 | 22 | SSH | |
 
-**RTSP URLs that work:** `rtsp://admin:12345@192.168.1.201:80/h264/ch1/main/av_stream` and `rtsp://admin:12345@192.168.1.175:80/h264/ch1/main/av_stream` (Caddy servers proxying RTSP). Connection timed out when tested later — cameras may be intermittent.
+**Correction (2026-11-02, re-measured):** the two "working" RTSP URLs above are false positives, and this machine is the host behind both.
 
-**4 cameras in DB** as of 2026-11-02: local network cameras with admin/12345 credentials.
+- `ifconfig` reports `192.168.1.201` and `192.168.1.175` as local addresses of this Mac.
+- The Caddyfile of container `autoecosystem_caddy` has no `/h264` route: only `respond /metrics 404` and `reverse_proxy web:8000`. Port 80 answers `308` to https for any path.
+- The scanner's own probe, direct transport, all three stored credential pairs:
+  `No frame for rtsp://admin:admin@192.168.1.201:80/h264/ch1/main/av_stream` (same for the other two).
+- `ffprobe -rtsp_transport tcp -i rtsp://admin:12345@192.168.1.201:80/h264/ch1/main/av_stream`:
+  `Invalid data found when processing input`.
+
+No RTSP camera is exposed on `192.168.1.0/24` as of 2026-11-02. `nmap -p 554 --open -T4` returns 6 live hosts and no open port; the only open services found were `192.168.1.1:9000 cslistener` and `192.168.1.105:6668 irc`.
+
+**Camera rows:** 9 rows deleted 2026-11-02 (3 on this machine's own IPs, 6 inserted by the nmap closed-port bug below). Backup of the full `cam` table before the delete: `/tmp/cam_backup_2026-11-02.sql`. One row kept: `192.168.1.1:554 admin/admin`, inactive; its port is closed too, so it is a manual fixture, not a found camera.
 
 ## Database setup
 
@@ -121,21 +130,32 @@ Workaround: use DirectTransport for local network, or use ffprobe directly for t
 - Ruff lint: clean
 - Immutable rules check: clean
 
+## Local-network run (2026-11-02)
+
+`proxy.enabled: false` was added to `ProxyConfig`. With it false, `TaskFactory._proxy` hands `NmapTask` and `RtspProbe` no proxy: nmap runs without `--proxies` and the probe uses `DirectTransport`. This is required for a private range (a residential exit cannot reach `192.168.1.0/24`) and it unblocked the run while the 2captcha account returns `HTTP Error 410: Gone`. `proxy.enabled: true` keeps the old fail-loud behaviour for public scans.
+
+Two bugs found by running it:
+
+1. **nmap inserted closed ports as cameras.** `NmapTask.run` looped over every port in `host_data["tcp"]`, which includes closed and filtered states, so each live host landed in the DB as a camera on 554. Fixed in `_store_open_ports`: only `state == "open"` is stored. This is what put 6 bogus rows in the table.
+2. **nmap path required a proxy it could not use.** `_scan` raised on any non-`http/socks4` scheme; with `protocol: socks5` in the config the run died before nmap started. Now the check lives in `_proxy_arguments` and is skipped when no proxy is configured.
+
+Verified: `uv run python main.py --start_nmap -v` on `192.168.1.0/24` → `Found 6 hosts using nmap scan`, `Executors: finished nmap scan`, 0 rows inserted. 34 tests pass, `ruff check .` clean.
+
 ## Current issues
 
 1. **2captcha proxy 410 Gone** — proxy API endpoint returned HTTP 410 for nmap and RTSP probe. Proxy service may need reconfiguration or new credentials.
 2. **OpenCV FFMPEG timeout** — RTSP probe via OpenCV times out at 30s. Need to investigate FFmpeg backend configuration or switch to direct socket/ffprobe approach.
-3. **No cameras in DB** — only one test camera inserted manually. Need to run nmap or import from Shodan to populate.
+3. **No cameras in DB** — only one test camera inserted manually, and no RTSP host exists on the LAN to populate from. Needs a Shodan import or a real camera on the network.
 4. **`_generic_nginx` duplicated** — exists in both `BrandCredentialRegistry` and `BrandCredentialLoader`. Could be consolidated.
 5. **`_read_lines` via __new__** — creates instance just to call instance method from @classmethod. Works but slightly awkward.
 
 ## Next steps
 
 1. Fix OpenCV RTSP probe (use ffprobe or fix FFmpeg backend)
-2. Reconfigure 2captcha proxy or use direct transport for local scans
-3. Run nmap scan on local network, populate DB with discovered cameras
-4. Run check mode against discovered cameras
-5. Run face scan mode against active cameras
+2. Reconfigure 2captcha proxy or keep `proxy.enabled: false` for local work
+3. ~~Run nmap scan on local network~~ — done, 0 cameras found; there is none to find
+4. ~~Run check mode against discovered cameras~~ — nothing to check until a real camera appears
+5. Run face scan mode against active cameras — blocked on a working RTSP stream
 6. Consolidate duplicated credential sets
 7. Add tests for brand_probe module
 8. Add error handling for proxy failures (410 Gone)
@@ -193,7 +213,7 @@ uv run python main.py --start_search
 # Run check mode (test credentials against DB cameras)
 uv run python main.py --start_check
 
-# Run nmap scan
+# Run nmap scan (set proxy.enabled: false in config.yaml for a local range)
 uv run python main.py --start_nmap
 
 # Run face scan
