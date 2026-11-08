@@ -150,7 +150,9 @@ class RtspProbe:
 
     @staticmethod
     def _to_camera(target: RtspTarget, frame) -> Camera:
-        image_b64 = cv2.imencode(".jpg", frame)[1].tobytes()
+        # The column is a String and the face scan decodes it with fromhex, so
+        # the frame travels as hex text, not as raw JPEG bytes.
+        image_b64 = cv2.imencode(".jpg", frame)[1].tobytes().hex()
         return Camera(
             ip=target.host,
             port=target.port,
