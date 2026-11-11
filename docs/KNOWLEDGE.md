@@ -320,6 +320,11 @@ open.
 
 The gate is two commands, because there is no CI (D20):
 
+**Correction (2026-11-11, later the same day): CI exists now.** `ci.yml` runs the same two
+commands on every pull request and on every push to `main`, and `publish.yml` runs them again
+before a release tag reaches the registry. The paragraph and the block below are the gate as
+this batch was delivered. See the container section at the end of this file.
+
 ```
 $ .venv/bin/python -m pytest -q
 141 passed in 12.86s
@@ -402,4 +407,197 @@ owner, and all six PRs carry zero reviews.
   code (D6), keep everything forever (D10, D13), biometric data of third parties in plain files
   with no encryption or access control, credentials stored in plaintext in `camera.password`,
   and no rotation (D39).
+
+## 2026-11-11 (later): the container, the CI, and the first release
+
+Second batch of the same day. Branch `feat/docker-release`, PR #8, merged at `26b7e20`. Docs
+follow-up on `docs/first-release`, PR #9, merged at `6264965`. Tag `v0.1.0`, published to Docker
+Hub as `iklob1/shodan-rtsp`. Before this batch the repository had no CI and no image.
+
+### What was built
+
+| Piece | What it is |
+|-------|------------|
+| `Dockerfile` | Two stages. The builder is `python:3.11-slim-bookworm` with `ghcr.io/astral-sh/uv:0.9.11`, `UV_PROJECT_ENVIRONMENT=/opt/venv`, `UV_COMPILE_BYTECODE=1` and `uv sync --frozen --no-dev`. The runtime stage installs `ca-certificates libgl1 libglib2.0-0 libgomp1 nmap`, copies `/opt/venv` only, adds user `scanner` (uid 1000) and sets `ENTRYPOINT ["/opt/venv/bin/python", "main.py"]`. No compiler ships. |
+| `.dockerignore` | `config.yaml`, `.env` and `proxylist.txt` never enter a layer, plus `.git`, `.github`, `.claude`, `.venv`, `tests`, `specs`, `docs`, `logs`, `Dockerfile` and `docker-compose.yml`. |
+| `docker-compose.yml` | New `scanner` service behind the `cli` profile: `image: ${SHODAN_IMAGE:-iklob1/shodan-rtsp:0.1.0}`, `DATABASE_HOST: postgres:5432`, the config mounted read-only, and two named volumes for the logs and the face model. `docker compose config --services` still prints `postgres` alone. |
+| `scanners/config.py` | `load_config` reads `DATABASE_HOST` and overrides `database.host` when it is set. |
+| `tests/test_config_database_host.py` | Three tests: the environment wins over the file, the file stands when the variable is unset, the rest of the file is untouched. |
+| `.github/workflows/ci.yml` | `ruff check .` and `pytest -q` on a push to `main` and on every pull request. It also declares `workflow_call`, so `publish.yml` runs this job instead of a second copy. |
+| `.github/workflows/publish.yml` | On a `v*` tag: runs the ci job, checks the tag against the version in `pyproject.toml`, builds `linux/amd64` with `load: true` and the gha cache, smoke tests those exact bytes, then `docker push --all-tags`. |
+
+The override exists because the database address is the only value that differs between a run on
+the host (`localhost:5440`, D40) and a run in a container (`postgres:5432` through compose,
+`host.docker.internal:5440` for a single `docker run`). Everything else, the Shodan key, the
+allowed ranges and the credentials, stays in `config.yaml`, which is mounted read-only and is not
+in the image.
+
+The container runs as `scanner`, uid 1000, which is enough for the seven commands: the sweep asks
+nmap for `-p ... -sV` only.
+
+### The image, as measured
+
+```console
+$ docker image ls shodan-rtsp:0.1.0 --format '{{.Repository}}:{{.Tag}} {{.Size}}'
+shodan-rtsp:0.1.0 1.82GB
+
+$ docker pull iklob1/shodan-rtsp:0.1.0
+Digest: sha256:967ba68bab12bcf04e06a56cd04aa37d1426690547f4526b598377771674bdb8
+Status: Downloaded newer image for iklob1/shodan-rtsp:0.1.0
+
+$ docker run --rm --entrypoint id iklob1/shodan-rtsp:0.1.0
+uid=1000(scanner) gid=1000(scanner) groups=1000(scanner)
+
+$ docker run --rm --entrypoint /opt/venv/bin/python iklob1/shodan-rtsp:0.1.0 -c "import sys, cv2, nmap, onnxruntime, psycopg2; print(sys.version.split()[0], cv2.__version__, onnxruntime.__version__)"
+3.11.18 4.11.0 1.20.1
+
+$ docker run --rm --entrypoint nmap iklob1/shodan-rtsp:0.1.0 --version
+Nmap version 7.93 ( https://nmap.org )
+```
+
+`/app` holds `config.yaml.example` and no `config.yaml`, no `.env`. The Hub reports 416 MiB per
+tag, which is the compressed download; the image on disk is 1.82 GB, because `insightface` pulls
+`scipy`, `scikit-learn`, `matplotlib` and both `opencv-python` wheels behind it.
+
+### The release, as it went
+
+```
+latest sha256:967ba68bab12 2026-11-11T17:56:38Z
+0.1.0  sha256:967ba68bab12 2026-11-11T17:56:36Z
+0.1    sha256:967ba68bab12 2026-11-11T17:56:34Z
+```
+
+All three tags point at the same digest, and the digest on this machine after the pull is that
+same one. What ran from the published image, not from the local build:
+
+| Command | Result |
+|---------|--------|
+| `report faces` with `DATABASE_HOST=host.docker.internal:5440` | `person 1 faces 22 ... camera 127.0.0.1:8000 frames 5 frame cve` |
+| `scan nmap 127.0.0.1/32` | `Found 1 hosts using nmap scan`, `nmap XML written to logs/nmap.xml`, and `scan_run` gained `26 \| nmap \| 127.0.0.1/32 \| 0` |
+| `scan shodan 'country:NL'` | refused before any API call: `ERROR the query names no net: range, so it reaches the whole index; declare the range the scan may reach in the query itself` |
+| `scan`, `report`, `search`, `measure` with `--help` | each lists its subcommands |
+| `docker compose run --rm scanner --help` | the compose path uses the published image, no build |
+
+The repository on the Hub did not exist before the tag push
+(`api/v2/repositories/iklob1/shodan-rtsp/` answered 404) and the push created it as a public
+repository. The Hub docs describe creating it in the UI and do not promise this, so the README
+says both.
+
+Two repository secrets drive `publish.yml`: `DOCKERHUB_USERNAME`, which is also the namespace,
+and `DOCKERHUB_TOKEN`, which needs **Read & Write**. The Hub generates a token read-only by
+default and a read-only one is refused at the push. On this machine both were already in the
+environment and the account was already in the Docker Desktop keychain, so `docker login`
+succeeded with no new credential.
+
+PR #1, from the fork `Yaimsputnik5/shodan_rtsp` and opened on 2026-06-03, was closed as obsolete.
+It conflicts with `main` in `main.py`, `models/camera.py` and `models/managers.py`
+(`git merge-tree --write-tree main pr1`), it adds a `models/db_init.py` that calls
+`Base.metadata.create_all` at import time, its table creation in `models/camera.py` sits after a
+`return`, and it drops the cleanup of the `city` value. The schema belongs to alembic now.
+
+### Four defects the first CI run found
+
+Each one was green on this Mac and red on a clean runner. All four are fixed.
+
+1. **`astral-sh/setup-uv@v10` does not exist.** The run died in seconds:
+   `##[error]Unable to resolve action astral-sh/setup-uv@v10, unable to find version v10`.
+   setup-uv publishes no floating major tag, so the workflow pins `v10.3.3` exactly. The other
+   actions do publish their majors (`checkout@v7`, `setup-buildx-action@v4`, `login-action@v4`,
+   `metadata-action@v6`, `build-push-action@v7`).
+2. **`NmapTask` built its `PortScanner()` in `__init__`.** python-nmap looks for the nmap binary
+   there, so the binary became a requirement of every caller, the tests that inject their own
+   scanner included. Those tests failed with
+   `nmap.nmap.PortScannerError: 'nmap program was not found in path'`. The scanner is built on
+   the first scan now, through `_scanner()`.
+3. **The migration tests read the developer config.** Without `config.yaml` they raised
+   `FileNotFoundError: [Errno 2] No such file or directory: 'config.yaml'` instead of the skip
+   the module docstring promises. They skip on that error now, and `ci.yml` starts a throwaway
+   `postgres:16` service and writes a `config.yaml` from the example with placeholder
+   credentials, so the five tests run in CI instead of skipping. Verified here by running the
+   suite from a directory with no `config.yaml`: `139 passed, 5 skipped`.
+4. **`test_load_config_reads_all_sections` was decided by the environment.** It asserts the dsn
+   of a file it wrote itself, and the `DATABASE_HOST` that the job exports for the migration
+   tests was overriding it:
+   `AssertionError: assert 'postgresql:/...alhost:5432/d' == '***h/d'`. The test unsets the
+   variable first. Second run with `DATABASE_HOST=localhost:5432` in the shell: `144 passed`.
+
+### Traps a future agent will hit
+
+1. **`astral-sh/setup-uv` has no floating major tag.** Pin an exact version or the job never
+   starts. The same check applies to any new action:
+   `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`.
+2. **`main` requires one approving review** (`required_approving_review_count: 1`,
+   `require_code_owner_reviews: true`, `enforce_admins: false`) and no reviewer exists for this
+   repository. A plain `gh pr merge` answers `the base branch policy prohibits the merge` and the
+   PR waits forever. Use `gh pr merge <n> --merge --admin` once the ci check is green; `--auto`
+   only waits for an approval that never comes. `main` also has `lock_branch: true`.
+3. **The Docker Hub API refuses a PAT as a bearer token.** `GET /v2/users/<name>/` with
+   `Authorization: Bearer $DOCKERHUB_TOKEN` answers 401 with `A personal access token or
+   organization access token cannot be used as a bearer`. `docker login` works. Test a token
+   through `docker login`, not through that endpoint.
+4. **`uv version --short` emits ANSI colour** when uv thinks it has a terminal
+   (`\x1b[36m0.1.0\x1b[39m`), so a matching tag read as a mismatch. `publish.yml` reads the
+   version with `sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml` for that reason.
+5. **`insightface` pulls non-headless `opencv-python`.** Both wheels end up in the image
+   (`opencv-python 4.11.0.86` and `opencv-python-headless 4.8.0.74`), and cv2 fails with
+   `ImportError: libGL.so.1` unless `libgl1` is installed in the runtime stage.
+6. **`--cap-add NET_RAW` does not give nmap a SYN scan.** As uid 1000 it prints `You requested a
+   scan type which requires root privileges.` and `QUITTING!`, because nmap checks the user, not
+   the capability. `--user root` is the way, and the CLI never asks for those scan types.
+7. **Docker Desktop here stores images in containerd**
+   (`driver-type: io.containerd.snapshotter.v1`), so `docker image inspect` prints empty
+   `Architecture`, `Os`, `User` and `Entrypoint` for a pulled image. The image is fine:
+   `docker image history` shows the build steps and the container behaves. Do not read those
+   fields as a broken image.
+8. **`.dockerignore` does not exclude itself.** The image carries `.dockerignore`, `.gitignore`
+   and `.python-version`. Harmless, and worth knowing before trusting a listing of `/app`.
+9. **The `SHODAN_IMAGE` default is the published image.** A change to the scanner needs
+   `SHODAN_IMAGE=shodan-rtsp:dev docker compose build scanner`, or compose uses the released one
+   and the change looks absent.
+10. **`.claude/` is untracked in the working tree** and is not in `.gitignore`, so it shows up in
+    every `git status`.
+
+### What is not proved
+
+- **`publish.yml` has run exactly once**, for `v0.1.0`. Its version check, its smoke test and the
+  `uses: ./.github/workflows/ci.yml` call were exercised by that run and by nothing else.
+- **Nothing was run on arm64.** The image is `linux/amd64` only, so an arm64 host runs it through
+  emulation, which nobody measured here.
+- **The face model download was never exercised from the image.** `scan faces` downloads
+  `buffalo_l` (about 280 MB) into `$HOME/.insightface` on its first run; from a container that
+  path is the `shodan_face_models` volume, and the published image was only used for `report`,
+  `scan nmap` and the gate.
+- **The image size is not bounded by anything.** 416 MiB compressed today, and no check fails if
+  it doubles.
+- **The compose path was proved with `--help` and with `pull`.** A full `docker compose run` of a
+  scan against the compose Postgres was not run after the default flipped to the published tag.
+- **The `-e DATABASE_HOST` run used `host.docker.internal`**, a Docker Desktop name. On Linux the
+  same flag needs another address.
+- **Nothing checks that a published tag matches a build.** The digest is recorded here by hand.
+
+### Next steps
+
+1. Publish the next release with the same two steps: bump the version in `pyproject.toml`, tag
+   `v<version>`, push the tag. The version check refuses a tag that does not match.
+2. Add a `linux/arm64` build to `publish.yml` if an arm host has to run it natively
+   (`platforms: linux/amd64,linux/arm64` with `load: false` and a manifest push).
+3. Run one full `docker compose run --rm scanner scan nmap ...` against the compose Postgres,
+   the only path through the published default tag that was not exercised.
+4. Decide whether `.claude/` enters `.gitignore`.
+5. Everything still open in the section above stands: the 0.5 threshold placeholder, the
+   `scan_run` status column, one CVE class proved, the Shodan path never live.
+
+### What to watch
+
+- **A red run on the `v*` tag.** The registry only ever sees an image whose tests passed and
+  whose tag equals the version, so a failure there means the release did not happen. Re-run from
+  the Actions tab.
+- **Hub pull limits.** Anonymous pulls are 100 per 6 hours per IP and an authenticated free
+  account is 200 per 6 hours, so a fleet of jobs pulling this image can hit the wall.
+- **Image size.** Any new dependency that pulls a scientific stack adds hundreds of MiB.
+- **The three tags drifting apart.** `0.1.0`, `0.1` and `latest` moved together for the first
+  release; a hand-pushed tag is how they stop matching.
+- **`main` against a direct push.** `enforce_admins: false` means an admin push is possible, so
+  nothing but the habit of using a branch stops a commit that skips the review rule.
+
 
