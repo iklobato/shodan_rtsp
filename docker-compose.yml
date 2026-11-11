@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: scanner
       POSTGRES_DB: cameras
     ports:
-      - "5433:5432"   # 5433 on the host avoids clashing with a local 5432
+      - "5440:5432"   # 5440: 5432 and 5433 are taken on this host (D40)
     volumes:
       - shodan_pg_data:/var/lib/postgresql/data
     healthcheck:

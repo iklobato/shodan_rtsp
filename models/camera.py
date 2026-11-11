@@ -1,57 +1,99 @@
-from datetime import datetime
+"""The camera entity: one device at one address and port.
 
-from sqlalchemy import Boolean, Column, DateTime, Index, Integer, String
-from sqlalchemy.orm import declarative_base
+Replaces the `cam` table. The `active` boolean became a status, because the CVE
+path never authenticates over RTSP and a boolean cannot say how a frame was
+obtained (D33).
 
-Base = declarative_base()
+Timestamps default to `now()` in the database rather than a Python helper, so
+every writer of a row stamps it from the same clock.
+"""
+
+import enum
+
+from ipaddress import ip_address
+
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Enum,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.orm import validates
+
+from models.base import BASE, JSON_OBJECT, InvalidEntity
+
+MAX_PORT = 65535
 
 
-class Face(Base):
-    """A detected face: bounding box + 128-d embedding + source camera."""
+class CameraStatus(enum.Enum):
+    """How far the pipeline got with one camera."""
 
-    __tablename__ = "faces"
-    __table_args__ = (Index("ix_faces_camera_id", "camera_id"),)
+    unknown = "unknown"
+    responded = "responded"
+    stream_obtained = "stream_obtained"
+    frame_by_cve = "frame_by_cve"
+    offline = "offline"
+
+
+class Camera(BASE):
+    __tablename__ = "camera"
+    __table_args__ = (
+        UniqueConstraint("ip", "port"),
+        Index("ix_camera_vendor_product", "vendor", "product"),
+        Index("ix_camera_status", "status"),
+    )
 
     id = Column(Integer, primary_key=True)
-    camera_id = Column(Integer, nullable=False)
-    frame_id = Column(Integer, nullable=True)  # optional link to face_frames
-    embedding = Column(String)  # 128 floats comma-separated
-    bbox_top = Column(Integer)
-    bbox_left = Column(Integer)
-    bbox_bottom = Column(Integer)
-    bbox_right = Column(Integer)
-    confidence = Column(String, default="")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    ip = Column(String(45), nullable=False)
+    port = Column(Integer, nullable=False)
+    user = Column(String(128), nullable=False, default="")
+    password = Column(String(256), nullable=False, default="")
+    url = Column(String(512), nullable=False, default="")
+    status = Column(
+        Enum(CameraStatus, name="camera_status"),
+        nullable=False,
+        default=CameraStatus.unknown,
+    )
+    vendor = Column(String(128), nullable=False, default="")
+    product = Column(String(128), nullable=False, default="")
+    version = Column(String(64), nullable=False, default="")
+    raw_banner = Column(JSON_OBJECT, nullable=True)
+    city = Column(String(128), nullable=False, default="")
+    country_code = Column(String(8), nullable=False, default="")
+    country_name = Column(String(128), nullable=False, default="")
+    region_code = Column(String(32), nullable=False, default="")
+    added_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        onupdate=func.now(),
+    )
 
+    @validates("ip")
+    def _validate_ip(self, _key: str, value: str) -> str:
+        """Refuse an address that does not parse, before any network call."""
+        if not value:
+            raise InvalidEntity("ip is required")
+        try:
+            ip_address(value)
+        except ValueError as unparsable:
+            raise InvalidEntity(f"ip does not parse: {value}") from unparsable
+        return value
 
-class FaceFrame(Base):
-    """A saved frame from an active camera (multi-frame capture)."""
+    @validates("port")
+    def _validate_port(self, _key: str, value: int) -> int:
+        """A port is a whole number inside the range, or it is not a port."""
+        if not isinstance(value, int) or not 1 <= value <= MAX_PORT:
+            raise InvalidEntity(f"port out of range: {value}")
+        return value
 
-    __tablename__ = "face_frames"
-
-    id = Column(Integer, primary_key=True)
-    camera_id = Column(Integer, nullable=False)
-    image_b64 = Column(String)
-    captured_at = Column(DateTime, default=datetime.utcnow)
-
-
-class Camera(Base):
-    __tablename__ = "cam"
-
-    id = Column(Integer, primary_key=True)
-    ip = Column(String)
-    port = Column(Integer)
-    user = Column(String, default="")
-    password = Column(String, default="")
-    url = Column(String, default="")
-    active = Column(Boolean, default=False)
-    city = Column(String, default="")
-    country_code = Column(String, default="")
-    country_name = Column(String, default="")
-    region_code = Column(String, default="")
-    image_b64 = Column(String, default="")
-    added_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    def __repr__(self):
-        return f"<Camera {self.ip}:{self.port} ({self.city}, {self.country_code}) - {self.active}>"
+    @validates("raw_banner")
+    def _validate_raw_banner(self, _key: str, value: dict | None) -> dict | None:
+        if value is not None and not isinstance(value, dict):
+            raise InvalidEntity("raw_banner must be a JSON object")
+        return value

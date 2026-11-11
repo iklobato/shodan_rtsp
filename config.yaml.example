@@ -2,7 +2,12 @@
 
 shodan:
   api_key: "<your_shodan_api_key>"
-  query: "screenshot.label:webcam,cam country:BR"
+  # A query runs only when it names the range it may reach (`net:`) and that
+  # range is declared below (D18, FR-001). Without both, the scan is refused
+  # before any API call: Shodan cannot be asked whether a result set stays
+  # inside a range, so a query with no `net:` filter reaches the whole index.
+  query: "net:203.0.113.0/24 screenshot.label:webcam,cam"
+  allowed_cidrs: ["203.0.113.0/24"]  # your lab, or a range you may scan in writing
 
 checkers:
   wordlist_users: wordlists/users_small.txt
@@ -12,7 +17,9 @@ checkers:
   concurrency: 1              # parallel RTSP probes; raise to speed up, bounded by the proxy exit
 
 nmap:
-  ip_range: 200.128.0.0/24
+  ip_range: 192.168.1.0/24    # your own lab or a written-authorized range
+  # RTSP plus the web and ONVIF ports most cameras expose instead of it (D15)
+  ports: [554, 80, 443, 8000, 8080, 8554, 34567]
   parallelism: 0             # > 0 runs nmap with -T4 --min-parallelism N; 0 = nmap defaults
   xml_path: logs/nmap.xml    # raw XML of the run; this is what --start_vuln_scan reads
 
@@ -46,11 +53,19 @@ face:
   match_threshold: 0.5        # cosine distance below = same person
   save_frames: true           # save face frames to DB
 
+frames:
+  # Frames are files on disk and the database holds the path (D17). The layout
+  # under this root is <root>/<camera_id>/<timestamp>-<source>.jpg (R8).
+  root_path: logs/frames
+
+brands:
+  # Brand signatures and the brand credential sets, as data (D27)
+  signature_path: brands.yaml
+
 database:
   # dockerized postgres, e.g.:
-  #   docker run -d --name shodan_pg -e POSTGRES_USER=scanner \
-  #     -e POSTGRES_PASSWORD=scanner -e POSTGRES_DB=cameras -p 5433:5432 postgres:16
+  #   docker compose up -d postgres
   user: "<postgres_user>"
   password: "<postgres_password>"
-  host: "localhost:5433"   # host[:port]; 5433 avoids clashing with a local 5432
+  host: "localhost:5440"   # host[:port]; 5432 and 5433 are taken on this host
   db: "cameras"

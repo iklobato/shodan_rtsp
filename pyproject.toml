@@ -15,6 +15,7 @@ dependencies = [
     "numpy>=1.24,<2",       # opencv 4.8 wheels are built against numpy 1.x (ABI)
     "insightface==0.7.3",   # face detection + 128-d embedding
     "onnxruntime==1.20.1",  # insightface backend
+    "alembic>=1.20.1",
 ]
 
 [dependency-groups]
