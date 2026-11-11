@@ -4,6 +4,8 @@ Date: 2026-11-11
 Repo: `/Users/iklo/shodan_rtsp`
 Method: grill session, ten rounds, 39 decisions, then 6 more added while writing the plan
 (D40 to D45) after measurement and research contradicted three of the original facts.
+D46 was added later the same day, after the container and the release shipped; it
+supersedes D20.
 Status: settled. The planning artifacts live in `specs/001-camera-monitoring-pipeline/`.
 
 The goal of the batch: scan the network, identify camera types, use known CVEs to
@@ -35,7 +37,7 @@ monitoring source.
 | D17 | Frame storage | File on disk, path in the database | With keep forever, hex in a varchar column is the most expensive of the three options and doubles the stored size. | D10 |
 | D18 | Shodan lock | CIDR list in config; the query is validated before API credit is spent | Checkable before the call. | D14 |
 | D19 | Observation granularity | One row per scan per port | Answers firmware change, uptime, and when a CVE first appeared. | D7 |
-| D20 | CI | None. Local tools only | Operator choice. The only gate is running ruff and pytest by hand. | none |
+| D20 | CI | None. Local tools only (superseded by D46) | Operator choice. The only gate is running ruff and pytest by hand. | none |
 | D21 | Lab | mediamtx plus a VM with known vulnerable camera firmware, isolated with no route out | Read only proof and threshold measurement cannot be verified without a real target. | D1, D16 |
 | D22 | Credential check | Keep, but try the brand specific credential set first | Gives brand detection a consumer and cuts scan time. | D3 |
 | D23 | Cleanup | Delete merged branches; remove `_probe_names.py`, `docs/proxy-investigation.md`, `proxylist.txt` and `.serena/` | Destructive, so the operator marked each one explicitly. | D11 |
@@ -61,6 +63,7 @@ monitoring source.
 | D43 | Shodan command name | `scan shodan` discovers, `search` answers the monitoring question | D38 listed six names and left the Shodan mode, which D14 and D37 keep, without one, while `--start_search` already means Shodan and D38 gives `search` to the monitoring query. | D38 |
 | D44 | Face embedding | 512 dimensions, cosine similarity over the L2-normalized vector, raw vector stored | Measured on the cached `w600k_r50.onnx`: the output shape is 1 by 512. The repository says 128-d in `pyproject.toml:18` and `scanners/face_recognizer.py:3,31`, and the matcher computes a Euclidean norm while the config documents cosine. Fixing the metric now is free because no embedding is stored yet. | D16 |
 | D45 | Threshold meaning | A minimum cosine similarity, and it stays a placeholder until the lab measures it | The key `face.match_threshold` means three different things today: the config calls it a cosine distance, the comment says Euclidean, and the code compares Euclidean norms. One meaning, stated in the config, and no value trusted before measurement. | D16, D44 |
+| D46 | Delivery | A container image published to Docker Hub from a version tag, with GitHub Actions running the gate | Supersedes D20. Decided and shipped later on 2026-11-11, after D20 was written. A user runs the CLI with `docker run` and needs no Python, no build and no source tree: the image is the CLI, its entrypoint is `main.py`, and it runs as uid 1000, which covers the seven commands. `ci.yml` runs ruff and pytest on every pull request, and `publish.yml` runs the same job plus a version check and a smoke test before the push, so a tag whose tests fail never reaches the registry. The database host comes from `DATABASE_HOST` and not from the image, because that address is the one value that differs between the host and a container (D40). The image holds no `config.yaml` and no `.env`. | D20, D40 |
 
 ---
 
@@ -102,7 +105,10 @@ monitoring source.
 - Encryption, access control and audit for stored frames and embeddings: not
   decided, outside this batch.
 - Backup policy for the frame directory: not decided.
-- CI: declined (D20).
+- CI: declined by D20 and then decided by D46 the same day, so this line is
+  closed. What is still undecided is the packaging beyond Docker Hub: no PyPI
+  release, no arm64 image, and no image for the `latest` tag that skips the
+  version check.
 - Whether the person label gets a command, a view or SQL: not decided.
 
 ---
