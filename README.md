@@ -2,7 +2,7 @@
 
 ![Python 3.11](https://img.shields.io/badge/python-3.11-blue)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
-![Tests 139 passed](https://img.shields.io/badge/tests-139%20passed-brightgreen)
+![Tests 141 passed](https://img.shields.io/badge/tests-141%20passed-brightgreen)
 ![Ruff clean](https://img.shields.io/badge/ruff-clean-brightgreen)
 
 A Python tool for **camera security research on a network you own or have written
