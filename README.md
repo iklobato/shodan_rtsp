@@ -475,14 +475,34 @@ Two repository secrets and one repository on Docker Hub:
 |-------|-------|
 | secret `DOCKERHUB_USERNAME` | the account, which is also the namespace |
 | secret `DOCKERHUB_TOKEN` | a personal access token with **Read & Write** |
-| the repository | created once in the Hub UI |
+| the repository | nothing to create: the first push of `v0.1.0` created `iklob1/shodan-rtsp` as a public repository |
 
 The Hub creates a token read-only by default, and a read-only token is refused at
 the push, so pick Read & Write when generating it. The Hub docs describe creating
-the repository in the UI and do not say a push creates it, so create it first.
+the repository in the UI and do not say a push creates it, so create it there if
+a push is ever refused for the missing repository.
 
 A release whose tests fail never reaches the registry, and neither does one whose
 tag does not match `pyproject.toml`. A failed run is re-run from the Actions tab.
+
+### The first release, as it went
+
+`v0.1.0` is published. The run of `v0.1.0` built `linux/amd64`, smoke tested the
+image and pushed three tags, and a pull from this machine answered:
+
+```console
+$ docker pull iklob1/shodan-rtsp:0.1.0
+Digest: sha256:967ba68bab12bcf04e06a56cd04aa37d1426690547f4526b598377771674bdb8
+$ docker run --rm -v "$PWD/config.yaml:/app/config.yaml:ro" \
+    -e DATABASE_HOST=host.docker.internal:5440 \
+    iklob1/shodan-rtsp:0.1.0 report faces
+person 1  faces 22  first seen 2026-11-11T15:45:04Z  last seen 2026-11-11T16:42:22Z
+  camera 127.0.0.1:8000  frames 5  frame cve
+  camera 127.0.0.1:8554  frames 17  frame rtsp
+```
+
+The Hub reports 416 MiB per tag, `linux/amd64` only. Nothing here was run on
+another architecture, so an arm64 host runs the image through emulation.
 
 ---
 
@@ -1060,7 +1080,12 @@ $ ffprobe -v error rtsp://192.168.1.64:554/Streaming/Channels/101
 | Add a dev dependency | `uv add --dev <pkg>` |
 
 The tests run against an in-memory SQLite database and injected fakes, so the
-whole suite passes with no Postgres, no camera and no network.
+whole suite passes with no Postgres, no camera and no network. The one exception
+is the migration suite, which needs a real PostgreSQL for the DDL:
+`.github/workflows/ci.yml` starts a throwaway one and writes a `config.yaml` from
+the example, with placeholder credentials, so those tests run in CI instead of
+skipping. On this machine `docker compose up -d postgres` is what makes them run,
+and they skip with the reason when the lab is not there.
 
 The code follows an OO/SOLID structure: one type per concept, strategies behind
 `typing.Protocol`, dependency injection at the composition root (`main.py`),
