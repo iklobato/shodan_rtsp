@@ -16,5 +16,35 @@ services:
       timeout: 3s
       retries: 10
 
+  # The scanner as a CLI, one command per run:
+  #   docker compose run --rm scanner scan nmap 192.168.1.0/24
+  scanner:
+    # The published image, so `docker compose run --rm scanner ...` needs no
+    # build. A change to the scanner is built from this tree instead:
+    #   SHODAN_IMAGE=shodan-rtsp:dev docker compose build scanner
+    image: ${SHODAN_IMAGE:-iklob1/shodan-rtsp:0.1.0}
+    build:
+      context: .
+    container_name: shodan_scanner
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # The database as the compose network sees it; the config.yaml of the host
+      # names localhost:5440 instead (scanners/config.py reads this override).
+      DATABASE_HOST: postgres:5432
+    volumes:
+      # The config is never in the image: it holds the Shodan key and the
+      # database password.
+      - ./config.yaml:/app/config.yaml:ro
+      - shodan_logs:/app/logs
+      # The face model downloads here on the first face run, once.
+      - shodan_face_models:/home/scanner/.insightface
+    # A CLI: it runs when it is named, and `docker compose up -d postgres`
+    # leaves it out.
+    profiles: ["cli"]
+
 volumes:
   shodan_pg_data:
+  shodan_logs:
+  shodan_face_models:

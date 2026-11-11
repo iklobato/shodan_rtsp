@@ -78,10 +78,12 @@ class _ScratchDatabase:
         self._name = name
 
     def skip_unless_reachable(self) -> None:
-        """Skip the test when the lab server is down, naming what to start."""
+        """Skip the test when the lab is down, naming what to start."""
         try:
             with self._connection(_ADMIN_DATABASE) as connection:
-                connection.execute(text("SELECT 1"))
+                connection.execute(text('SELECT 1'))
+        except FileNotFoundError:
+            pytest.skip("no config.yaml here, so the lab database is unnamed")
         except OperationalError as unreachable:
             pytest.skip(f"lab postgres is down: {unreachable}")
 

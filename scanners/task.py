@@ -118,7 +118,10 @@ class NmapTask(Task):
     ) -> None:
         super().__init__(config, database)
         self.identifier = identifier
-        self.scanner = nmap.PortScanner()
+        # Built on the first scan. python-nmap looks for the nmap binary inside
+        # `PortScanner()`, so an eager one makes the binary a requirement of
+        # every caller, a test that injects its own scanner included.
+        self.scanner: nmap.PortScanner | None = None
 
     def run(self) -> None:
         logging.info(f"Starting nmap scanning on {self.config.ip_range}")
@@ -143,7 +146,7 @@ class NmapTask(Task):
         method's docstring saying string.
         """
         with open(self.config.xml_path, "wb") as handle:
-            handle.write(self.scanner.get_nmap_last_output())
+            handle.write(self._scanner().get_nmap_last_output())
         logging.info(f"nmap XML written to {self.config.xml_path}")
 
     def _store_open_ports(self, host: str, host_data: Dict, run: ScanRun) -> int:
@@ -184,8 +187,14 @@ class NmapTask(Task):
         arguments = f"-p {self._ports_argument()} -sV"
         if self.config.parallelism > 0:
             arguments += f" -T4 --min-parallelism {self.config.parallelism}"
-        response = self.scanner.scan(hosts=target, arguments=arguments)
+        response = self._scanner().scan(hosts=target, arguments=arguments)
         return response.get("scan")
+
+    def _scanner(self) -> nmap.PortScanner:
+        """The scanner of this task, built once, or the one a caller injected."""
+        if self.scanner is None:
+            self.scanner = nmap.PortScanner()
+        return self.scanner
 
     def _ports_argument(self) -> str:
         """The service scan port list of D15, as nmap wants it."""

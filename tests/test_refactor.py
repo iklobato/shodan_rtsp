@@ -402,7 +402,13 @@ def test_mark_stream_obtained_returns_false_for_unknown_camera(
 # --- centralised config (single config.yaml) ------------------------------
 
 
-def test_load_config_reads_all_sections(tmp_path):
+def test_load_config_reads_all_sections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The environment overrides the database host, so a job that exports
+    # DATABASE_HOST (ci.yml does, for the migration tests) would otherwise
+    # decide this assertion instead of the file.
+    monkeypatch.delenv("DATABASE_HOST", raising=False)
     wordlist = tmp_path / "wl.txt"
     wordlist.write_text("admin\n")
     cfg = tmp_path / "config.yaml"
