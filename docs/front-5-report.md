@@ -36,13 +36,13 @@ After, in the repository:
 
 ```
 $ .venv/bin/python -m pytest -q
-140 passed in 8.68s
+141 passed in 12.86s
 
 $ .venv/bin/ruff check .
 All checks passed!
 ```
 
-The 33 new tests are the seven modules of this front:
+The 34 new tests are the seven modules of this front:
 
 | Module | Tests | What it holds |
 | --- | --- | --- |
@@ -50,7 +50,7 @@ The 33 new tests are the seven modules of this front:
 | `tests/test_person_cluster.py` | 9 | one person per face, the frame read either way, the scope gate, the disabled scan, and the frames of one capture |
 | `tests/test_person_merge.py` | 3 | open a person, join one, merge two without losing a face or a frame |
 | `tests/test_report_output.py` | 7 | the two output shapes, the padding included, and the same two reports over stored rows |
-| `tests/test_person_anonymous.py` | 2 | a person prints as an id, and the label stays on the row |
+| `tests/test_person_anonymous.py` | 3 | a person prints as an id, a labelled person prints with the label, and the label stays on the row |
 | `tests/test_threshold_measure.py` | 5 | the measurement, the two groups, and the four refusals of the pair set |
 | `tests/test_cli_exit.py` | 3 | a real `main()`: exit 1 on a refusal, exit 2 on a bad command line |
 
