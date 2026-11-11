@@ -30,16 +30,17 @@ nmap:
   # RTSP plus the web and ONVIF ports most cameras expose instead of it (D15)
   ports: [554, 80, 443, 8000, 8080, 8554, 34567]
   parallelism: 0             # > 0 runs nmap with -T4 --min-parallelism N; 0 = nmap defaults
-  xml_path: logs/nmap.xml    # raw XML of the run; this is what --start_vuln_scan reads
+  xml_path: logs/nmap.xml    # raw XML of the run, kept as the record of what nmap saw
 
 vuln:
-  # Names the CVEs that cover what an nmap or Shodan scan already collected.
-  # It never sends a payload or contacts a device.
-  nmap_xml: logs/nmap.xml     # the XML --start_nmap writes (nmap.xml_path)
+  # Names the CVEs that cover what a scan already stored, then reads each match
+  # once through the read-only classes of the batch. Nothing is written to a
+  # device and no payload is sent (D9, D30).
   feed_path: nvdcve-2.0.json  # NVD 2.0 JSON; see the README for how to build a subset
   cpe_map_path: cpe_map.yaml  # product string -> CPE vendor:product
   min_cvss: 0.0               # drop findings below this base score
-  report_path: logs/vuln_report.json
+  web_ports: [80, 443, 8000, 8080]  # tried after the port the camera was seen on
+  timeout_seconds: 8.0        # one network step; the RTSP probe uses the same bound
 
 face:
   enabled: true               # set false to skip face scan

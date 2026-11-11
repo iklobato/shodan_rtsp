@@ -6,6 +6,7 @@ from collections.abc import Callable
 from scanners.brand_probe import BrandBook, Identifier
 from scanners.config import AppConfig, NmapConfig, ShodanConfig, load_config
 from scanners.task import CheckDeps, CheckTask, NmapTask, ShodanDeps, ShodanTask, Task
+from scanners.vuln_task import CveDeps, CveTask
 
 __version__ = "0.1.0"
 
@@ -35,6 +36,17 @@ class TaskFactory:
                 config=self._config.checkers,
                 targets=self._config.targets,
                 identifier=self._identifier(),
+                camera_id=arguments.camera_id,
+            )
+        )
+
+    def build_cve(self, arguments: Namespace) -> CveTask:
+        """The CVE task, over every camera waiting for a frame or the named one."""
+        return CveTask(
+            CveDeps(
+                config=self._config.vuln,
+                frames=self._config.frames,
+                targets=self._config.targets,
                 camera_id=arguments.camera_id,
             )
         )
@@ -70,6 +82,7 @@ class CommandLine:
             "nmap": factory.build_nmap,
             "shodan": factory.build_shodan,
             "check": factory.build_check,
+            "cve": factory.build_cve,
         }
 
 
@@ -97,6 +110,14 @@ def parse_args() -> Namespace:
     )
     commands.add_parser(
         "check", help="Try credentials against the stored cameras"
+    ).add_argument(
+        "--camera-id",
+        type=int,
+        default=0,
+        help="Restrict the run to one camera id; defaults to every camera waiting",
+    )
+    commands.add_parser(
+        "cve", help="Read a camera through the CVE classes of the batch"
     ).add_argument(
         "--camera-id",
         type=int,

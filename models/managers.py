@@ -13,12 +13,18 @@ from sqlalchemy.orm import Session
 
 from models.camera import Camera, CameraStatus
 from models.database import Database, default_database
+from models.finding import CveFinding, CveOutcome
+from models.frame import FaceFrame
 from models.observation import CameraObservation
 from models.scan_run import ScanKind, ScanRun
 
 # The two statuses that mean a frame exists for the camera: one grabbed over
 # RTSP, one obtained through a CVE (D33). Both are the face scan's queue.
 _FRAME_STATUSES = (CameraStatus.stream_obtained, CameraStatus.frame_by_cve)
+
+# cve_finding.failure_reason is a 512 character column, so a reason is cut to fit
+# at the boundary instead of failing the write after the attempt already ran.
+_MAX_REASON_CHARS = 480
 
 
 class CameraRepository:
@@ -98,6 +104,38 @@ class CameraRepository:
             stored.password = camera.password
             stored.url = camera.url
             logging.debug("Updated %s:%s", camera.ip, camera.port)
+            return True
+
+    def mark_frame_by_cve(self, camera: Camera) -> bool:
+        """Record that the frame came through a CVE class, not over RTSP (D33)."""
+        with self._db.session_scope() as session:
+            stored = self._find_in(session, camera.ip, camera.port)
+            if stored is None:
+                logging.warning(
+                    "Camera %s:%s not found in the database.", camera.ip, camera.port
+                )
+                return False
+            stored.status = CameraStatus.frame_by_cve
+            return True
+
+    def record_device_description(
+        self, camera: Camera, model: str, firmware: str
+    ) -> bool:
+        """Write the model and the firmware an unauthenticated read reported.
+
+        FR-019 asks for them because they are what a firmware-level CVE needs to
+        be matched later. A field the read did not carry keeps what the row
+        already had, so a description never blanks out the identification.
+        """
+        with self._db.session_scope() as session:
+            stored = self._find_in(session, camera.ip, camera.port)
+            if stored is None:
+                logging.warning(
+                    "Camera %s:%s not found in the database.", camera.ip, camera.port
+                )
+                return False
+            stored.product = model or stored.product
+            stored.version = firmware or stored.version
             return True
 
     def _find_in(self, session: Session, ip: str, port: int) -> Camera | None:
@@ -185,3 +223,90 @@ class CameraObservationRepository:
         observation.product = camera.product
         observation.version = camera.version
         observation.raw_banner = camera.raw_banner
+
+
+class CveFindingRepository:
+    """Encapsulates every query against the cve_finding table."""
+
+    def __init__(self, database: Database | None = None) -> None:
+        self._database = database
+
+    def upsert(self, finding: CveFinding) -> CveFinding:
+        """The row of this camera and CVE, inserted when the pair is new.
+
+        UNIQUE (camera_id, cve_id) makes the pair the identity of a finding, so a
+        repeated run updates the row and `first_seen_at` keeps when the CVE was
+        first matched (D31).
+        """
+        with self._scope() as session:
+            stored = self._find_in(session, finding.camera_id, finding.cve_id)
+            if stored is None:
+                session.add(finding)
+                return finding
+            stored.cve_class = finding.cve_class
+            # The column default applies at INSERT only, so a caller that never
+            # stated a range hands over None here; the column is not nullable.
+            stored.matched_range = finding.matched_range or ""
+            stored.cvss = finding.cvss
+            stored.scan_run_id = finding.scan_run_id
+            return stored
+
+    def record_frame(self, finding: CveFinding, frame_id: int) -> None:
+        """The class produced the picture: the frame is the whole outcome."""
+        with self._scope() as session:
+            stored = self._stored_in(session, finding)
+            stored.outcome = CveOutcome.frame_obtained
+            stored.failure_reason = ""
+            stored.frame_id = frame_id
+            stored.last_attempt_at = func.now()
+
+    def record_failure(self, finding: CveFinding, reason: str) -> None:
+        """The class produced no picture: the reason is recorded, not dropped.
+
+        A reason is cut to the width of the column, because losing the tail of a
+        long list of ports is better than losing the write (FR-018).
+        """
+        with self._scope() as session:
+            stored = self._stored_in(session, finding)
+            stored.outcome = CveOutcome.no_frame
+            stored.failure_reason = reason[:_MAX_REASON_CHARS]
+            stored.last_attempt_at = func.now()
+
+    def _scope(self) -> AbstractContextManager[Session]:
+        """The injected database, or the process-wide one."""
+        return (self._database or default_database()).session_scope()
+
+    def _find_in(
+        self, session: Session, camera_id: int, cve_id: str
+    ) -> CveFinding | None:
+        return (
+            session.query(CveFinding)
+            .filter(CveFinding.camera_id == camera_id, CveFinding.cve_id == cve_id)
+            .one_or_none()
+        )
+
+    def _stored_in(self, session: Session, finding: CveFinding) -> CveFinding:
+        """The row as the session holds it, so the write lands on the stored one."""
+        return session.query(CveFinding).filter(CveFinding.id == finding.id).one()
+
+
+class FaceFrameRepository:
+    """Encapsulates every query against the face_frame table."""
+
+    def __init__(self, database: Database | None = None) -> None:
+        self._database = database
+
+    def record(self, frame: FaceFrame) -> FaceFrame:
+        """Store the row of a frame that is already on disk.
+
+        The file comes first: a row without its file is a broken reference, and
+        UNIQUE (path) makes a second write of the same file one row (R8).
+        """
+        with self._scope() as session:
+            session.add(frame)
+            session.flush()
+            return frame
+
+    def _scope(self) -> AbstractContextManager[Session]:
+        """The injected database, or the process-wide one."""
+        return (self._database or default_database()).session_scope()

@@ -14,6 +14,13 @@ _DEFAULT_MIN_CVSS = 0.0
 # RTSP plus the web and ONVIF ports most cameras expose instead of it, so a
 # camera that answers on no RTSP port is still found (D15).
 _DEFAULT_PORTS: tuple[int, ...] = (554, 80, 443, 8000, 8080, 8554, 34567)
+# The HTTP ports of that list: what a CVE read is tried on, after the port the
+# camera was actually seen on.
+_WEB_PORTS: tuple[int, ...] = (80, 443, 8000, 8080)
+# One network step. The RTSP probe already spends 8 s on a camera that accepts
+# the connection and never answers (rtsp_probe._TCP_CAPTURE_OPTIONS), so a CVE
+# read is held to the same bound and the run records the timeout (FR-020).
+_DEFAULT_TIMEOUT_SECONDS = 8.0
 
 
 class ShodanConfig(BaseModel):
@@ -53,8 +60,8 @@ class NmapConfig(BaseModel):
     # nmap parallelises hosts itself; this tunes that. When > 0 the scan runs
     # with `-T4 --min-parallelism <N>`. 0 leaves nmap's own defaults untouched.
     parallelism: int = 0
-    # Where the run's raw XML lands. This is the file the vuln mode reads, so
-    # keep it in step with VulnConfig.nmap_xml.
+    # Where the run's raw XML lands, as the record of what nmap saw. The CVE
+    # task does not read it: it matches what the scan stored (D30).
     xml_path: str = "logs/nmap.xml"
 
 
@@ -77,23 +84,21 @@ class FaceConfig(BaseModel):
 
 
 class VulnConfig(BaseModel):
-    """CVE identification settings: an NVD feed plus a product -> CPE map.
+    """CVE matching, and the read-only attempt that follows a match (D9, D30).
 
-    Identification only. The scanner reads what an nmap or Shodan scan already
-    collected and names the CVEs that cover it; it never sends a payload or
-    attempts an exploit.
+    The feed and the map name the CVEs a camera is exposed to. A match is then
+    read once, bounded by `timeout_seconds`, and never written to the device.
     """
 
-    # The nmap XML to read. `--start_nmap` writes it (NmapConfig.xml_path); a
-    # standalone run can also drop one here: `nmap -sV -oX logs/nmap.xml <range>`.
-    nmap_xml: str = "logs/nmap.xml"
     # NVD 2.0 JSON feed. A per-product subset from the NVD API is the intended
     # input; the full year files are hundreds of MB and load whole.
     feed_path: str = "nvdcve-2.0.json"
     cpe_map_path: str = "cpe_map.yaml"
     # Drop findings below this CVSS base score (0.0 keeps every scored CVE).
     min_cvss: float = _DEFAULT_MIN_CVSS
-    report_path: str = "logs/vuln_report.json"
+    # The ports a read is tried on after the camera's own: the HTTP ones of D15.
+    web_ports: list[int] = Field(default_factory=lambda: list(_WEB_PORTS))
+    timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
 
 
 class FramesConfig(BaseModel):
