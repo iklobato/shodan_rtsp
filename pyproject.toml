@@ -1,7 +1,7 @@
 [project]
 name = "shodan-rtsp"
 version = "0.1.0"
-description = "RTSP camera security research scanner: Shodan/Nmap discovery, credential check, proxied probing."
+description = "RTSP camera security research scanner: Shodan/Nmap discovery, credential check, frame capture."
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "shodan==1.28.0",
@@ -11,10 +11,10 @@ dependencies = [
     "SQLAlchemy==2.0.19",
     "pydantic==2.11.10",
     "pyyaml>=6",            # scanners/config.py imports yaml directly
-    "curl_cffi~=0.15.0",    # optional at runtime (find_spec), used when present
     "numpy>=1.24,<2",       # opencv 4.8 wheels are built against numpy 1.x (ABI)
-    "insightface==0.7.3",   # face detection + 128-d embedding
+    "insightface==0.7.3",   # face detection + 512-d embedding (buffalo_l, D44)
     "onnxruntime==1.20.1",  # insightface backend
+    "alembic>=1.20.1",
 ]
 
 [dependency-groups]

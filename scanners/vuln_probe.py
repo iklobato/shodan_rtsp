@@ -25,6 +25,11 @@ _CPE_PRODUCT_INDEX = 4
 _CPE_VERSION_INDEX = 5
 # NVD writes "any version" as * and "not applicable" as - in the version field.
 _UNBOUNDED_VERSION = ("", "*", "-")
+# NVD names a camera model's firmware CPE "<model>_firmware" and keeps the
+# vulnerable range there, while the hardware CPE of the same model is flagged
+# not vulnerable. Measured on CVE-2017-7921: 58 vulnerable ranges, all of them
+# on a hikvision:<model>_firmware product.
+_FIRMWARE_SUFFIX = "_firmware"
 _SEGMENT_SEPARATOR = re.compile(r"[._\-]")
 # Sort ranks that keep a mixed numeric/text version key totally ordered.
 _NUMERIC_SEGMENT = 0
@@ -72,6 +77,14 @@ class CpeName:
     vendor: str
     product: str
     version: str = ""
+
+    def as_firmware(self) -> "CpeName":
+        """The same device read as the firmware CPE NVD hangs the flaw on."""
+        return CpeName(
+            vendor=self.vendor,
+            product=f"{self.product}{_FIRMWARE_SUFFIX}",
+            version=self.version,
+        )
 
     @classmethod
     def parse(cls, criteria: str) -> "CpeName":
@@ -124,6 +137,18 @@ class CpeMatchRange:
             return not self._has_bounds()
         return self._within_bounds(device.version)
 
+    def describe(self) -> str:
+        """The range as the NVD record wrote it, for the finding to carry."""
+        if self.version:
+            return self.version
+        bounds = (
+            (self.start_including, ">="),
+            (self.start_excluding, ">"),
+            (self.end_including, "<="),
+            (self.end_excluding, "<"),
+        )
+        return ", ".join(f"{operator}{bound}" for bound, operator in bounds if bound)
+
     def _has_bounds(self) -> bool:
         return any(
             (
@@ -163,7 +188,11 @@ class CveEntry:
     ranges: tuple[CpeMatchRange, ...]
 
     def covers(self, device: CpeName) -> bool:
-        return any(match.covers(device) for match in self.ranges)
+        return self.covering_range(device) is not None
+
+    def covering_range(self, device: CpeName) -> CpeMatchRange | None:
+        """The first range of this record that covers the device, if any."""
+        return next((match for match in self.ranges if match.covers(device)), None)
 
 
 @dataclass(frozen=True)
@@ -175,6 +204,7 @@ class CveMatch:
     summary: str
     host: str
     port: int
+    matched_range: str = ""
 
 
 @dataclass(frozen=True)
@@ -183,6 +213,7 @@ class DeviceFingerprint:
 
     host: str
     port: int
+    vendor: str = ""
     product: str = ""
     version: str = ""
     cpe: str = ""
@@ -346,7 +377,7 @@ class VulnProbe:
         if identified is None:
             return []
         return [
-            self._to_match(entry, device)
+            self._to_match(entry, device, identified)
             for entry in self._feed.entries_for(identified)
             if entry.cvss >= self._min_cvss and entry.covers(identified)
         ]
@@ -358,7 +389,34 @@ class VulnProbe:
         in the 2.3 layout, so only a 2.3 name is used directly.
         """
         if device.cpe.startswith(_CPE_PREFIX):
-            return CpeName.parse(device.cpe)
+            return self._carried(CpeName.parse(device.cpe))
+        return self._carried(self._named_pair(device) or self._mapped_pair(device))
+
+    def _carried(self, identified: CpeName | None) -> CpeName | None:
+        """The pair the feed carries entries for, retried as firmware once.
+
+        NVD flags a camera's hardware CPE `vulnerable: false` and puts the
+        vulnerable range on the firmware CPE of the same model, so a pair that
+        names only the model finds nothing. The retry adds the one suffix NVD
+        uses; it does not widen the match, and a pair the feed carries in
+        neither form is returned unchanged so the run records the same reason
+        it did before.
+        """
+        if identified is None or self._feed.entries_for(identified):
+            return identified
+        firmware = identified.as_firmware()
+        return firmware if self._feed.entries_for(firmware) else identified
+
+    def _named_pair(self, device: DeviceFingerprint) -> CpeName | None:
+        """The pair brands.yaml already read off the device, if it named one."""
+        if not (device.vendor and device.product):
+            return None
+        return CpeName(
+            vendor=device.vendor, product=device.product, version=device.version
+        )
+
+    def _mapped_pair(self, device: DeviceFingerprint) -> CpeName | None:
+        """The pair the product -> CPE map gives for the scanned product string."""
         mapped = self._cpe_map.resolve(device.product)
         if mapped is None:
             return None
@@ -366,11 +424,15 @@ class VulnProbe:
             vendor=mapped.vendor, product=mapped.product, version=device.version
         )
 
-    def _to_match(self, entry: CveEntry, device: DeviceFingerprint) -> CveMatch:
+    def _to_match(
+        self, entry: CveEntry, device: DeviceFingerprint, identified: CpeName
+    ) -> CveMatch:
+        covering = entry.covering_range(identified)
         return CveMatch(
             cve_id=entry.cve_id,
             cvss=entry.cvss,
             summary=entry.summary,
             host=device.host,
             port=device.port,
+            matched_range=covering.describe() if covering else "",
         )

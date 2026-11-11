@@ -2,39 +2,84 @@
 
 ![Python 3.11](https://img.shields.io/badge/python-3.11-blue)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
-![Tests 35 passed](https://img.shields.io/badge/tests-35%20passed-brightgreen)
+![Tests 141 passed](https://img.shields.io/badge/tests-141%20passed-brightgreen)
 ![Ruff clean](https://img.shields.io/badge/ruff-clean-brightgreen)
 
-A Python tool for **RTSP camera security research**. It discovers cameras (Shodan
-API or an Nmap sweep), tests default and weak credentials, and stores a proof
-frame. Outbound probes leave through a residential proxy, not your own IP.
+Find cameras on a network you own, read one frame through the path that works,
+match that camera against a CVE feed, read the faces in the frame, group the faces
+into people, and answer who appeared, on which camera and when.
+
+```text
+   ┌──────────────────────┐
+   │     config.yaml      │   targets, wordlists, database, one file
+   └──────────┬───────────┘
+              │
+   ┌──────────▼────────────┐
+   │ targets.allowed_cidrs │   THE GATE: one packet never leaves without this
+   └──────────┬────────────┘
+              │
+   scan nmap ─┤
+   scan shodan┼──►  ┌──────────┐      ┌────────────────┐
+   scan check ┤     │ Postgres │ ◄────│ report faces   │
+   scan cve ──┤     └────┬─────┘      │ search         │
+   scan faces ┘          │            │ measure        │
+                         ▼            └────────────────┘
+                 frames on disk
+                 <root>/<camera_id>/<timestamp>-<source>.jpg
+```
 
 > [!WARNING]
-> **Authorized use only.** This tool logs into cameras and captures video. Use it
-> only against devices you own or have **explicit written authorization** to test
-> (your own lab, or a pentest with a defined scope). Searching for, logging into,
-> or recording from cameras you do not control is unauthorized access and
-> interception, and is illegal in most places. Staying in scope is your
-> responsibility; the authors are not liable for misuse.
+> **Authorized use only.** This tool logs into cameras and reads frames from them.
+> Run it only against devices you own or have **explicit written authorization** to
+> test: your own lab, or an engagement with a defined scope. Reaching a camera you
+> do not control is unauthorized access, and recording from it is interception.
+> Both are illegal in most places. `targets.allowed_cidrs` is the authorization
+> written down once, and it is empty by default: an empty list authorizes nothing.
 >
-> The repo ships two credential wordlist sizes under `wordlists/`: a 75-probe
-> `*_small.txt` set and a 70,470-probe full set. Keep them pointed at targets you
-> are authorized to test. File formats are in [Test credentials](#test-credentials).
+> The CVE path is read-only by construction. It pulls at most one frame per match,
+> sends no payload, and writes nothing to the device (D9, D30). Nothing in this
+> repository is a weaponized exploit.
+>
+> Faces are read from frames the pipeline already obtained, and the people they are
+> grouped into stay anonymous: a person is an id until an operator names it by hand
+> (D28). Do not point this at people who did not agree to it.
 
 ---
 
 ## Contents
 
-- [Quickstart](#quickstart)
-- [How it works](#how-it-works)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Usage](#usage)
-- [Mode details](#mode-details)
-- [Vuln scan](#vuln-scan---start_vuln_scan)
-- [Development](#development)
-- [Disclaimer](#disclaimer)
-- [License](#license)
+| | | |
+|---|---|---|
+| [At a glance](#at-a-glance) | [Quickstart](#quickstart) | [One run, end to end](#one-run-end-to-end) |
+| [Install](#install) | [Lab target](#lab-target) | [The seven commands](#the-seven-commands) |
+| [Exit codes](#exit-codes) | [The monitoring answer](#the-monitoring-answer) | [Measure the threshold](#measure-the-face-threshold) |
+| [CVE matching](#cve-matching) | [Data model](#data-model) | [Configuration](#configuration) |
+| [Troubleshooting](#troubleshooting) | [Development](#development) | [License](#license) |
+
+---
+
+## At a glance
+
+| | |
+|---|---|
+| **Input** | a CIDR you own, plus `config.yaml` |
+| **Output** | Postgres rows, JPEG frames on disk, three read-only reports |
+| **Reaches the network** | `scan nmap`, `scan shodan`, `scan check`, `scan cve`, `scan faces` |
+| **Never reaches the network** | `report faces`, `search`, `measure threshold` |
+| **Writes to a device** | never. One frame read per match, no payload, no config push |
+| **Names a person** | never automatically. A person is an id until a human labels it |
+| **Hard dependency** | Python 3.11, Postgres, `nmap`, `ffmpeg` for RTSP frames |
+| **Soft dependency** | `mediamtx` for the lab, `~/.insightface/models/buffalo_l` for faces |
+
+### What it does, and what it does not
+
+| Stage | Does | Does not |
+|-------|------|----------|
+| `scan nmap` | sweeps 7 camera ports, stores one row per open port | guess credentials, open a stream |
+| `scan check` | tries `url x user x password`, records what worked, stores one frame | retry a locked device, brute-force outside the wordlist |
+| `scan cve` | matches stored banners against NVD, reads one frame per match | send an exploit, write to the device |
+| `scan faces` | detects faces, clusters them into people, writes frame files | label a person, keep a face that failed detection |
+| `report` / `search` | print what is stored | touch the network at all |
 
 ---
 
@@ -42,128 +87,144 @@ frame. Outbound probes leave through a residential proxy, not your own IP.
 
 | # | Step | Command |
 |---|------|---------|
-| 1 | Install deps and Postgres | `uv sync` then `docker compose up -d` |
-| 2 | Create config | `cp config.yaml.example config.yaml` |
-| 3 | Create the table (first run only) | see command below |
-| 4 | Fill the DB | `uv run python main.py --start_search` |
-| 5 | Test credentials | `uv run python main.py --start_check -v` |
+| 1 | Install dependencies | `uv sync` |
+| 2 | Start Postgres 16 on port 5440 | `docker compose up -d postgres` |
+| 3 | Create the config and edit it | `cp config.yaml.example config.yaml` |
+| 4 | Create the schema | `uv run alembic upgrade head` |
+| 5 | Sweep your lab | `uv run python main.py scan nmap 127.0.0.1/32` |
+| 6 | Read the result | `uv run python main.py report faces` |
 
-```bash
-uv sync                                # installs into .venv; uv fetches Python 3.11 if needed
-docker compose up -d                   # Postgres on localhost:5433
-cp config.yaml.example config.yaml     # edit: shodan.api_key, proxy.token, DB creds
+Real terminal, this machine, 2026-11-11:
+
+```console
+$ uv sync
+$ docker compose up -d postgres
+[+] Running 1/1
+ ✔ Container shodan_pg  Started
+
+$ uv run alembic current
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+0002 (head)
+
+$ uv run python main.py --help
+usage: main.py [-h] [--config CONFIG] [-v] {scan,report,search,measure} ...
+
+Camera Scanner
+
+positional arguments:
+  {scan,report,search,measure}
+    scan                Scans that write to the database
+    report              Read-only reports
+    search              Who appeared, where and when
+    measure             Measurements that write nothing
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       Path to the configuration file
+  -v, --verbose         Verbose mode
 ```
 
-First run only:
-
-```bash
-uv run python -c "from models.database import Database; from models.camera import Base; Base.metadata.create_all(Database().engine)"
-```
-
-Each step is explained below.
+The full lab runbook, with the devices to point this at, is
+`specs/001-camera-monitoring-pipeline/quickstart.md`.
 
 ---
 
-## How it works
-
-Five run modes and one storage layer. Everything reads from a single
-`config.yaml`.
+## One run, end to end
 
 ```mermaid
-flowchart LR
-    CFG[config.yaml] --> MODE{run mode}
-
-    MODE -->|--start_search| SH[ShodanTask]
-    MODE -->|--start_nmap| NM[NmapTask]
-    MODE -->|--start_check| CK[CheckTask]
-    MODE -->|--start_face_scan| FS[FaceScanTask]
-    MODE -->|--start_vuln_scan| VS[VulnScanTask]
-
-    SH -->|ip:port| DB[(Postgres cam)]
-    NM -->|port 554 open| DB
-    CK -->|working creds + frame| DB
-    DB -->|active rows| FS
-    NM -->|nmap XML| VS
-    VS -->|report| JSON[vuln_report.json]
+flowchart TD
+    A[config.yaml] --> B{targets.allowed_cidrs}
+    B -->|inside| C[scan nmap]
+    B -->|outside| X[refused, exit 1, named addresses]
+    C --> D[(camera + camera_observation)]
+    D --> E[scan check]
+    E --> F[(camera.url, camera.status, one frame)]
+    F --> G[scan cve]
+    G --> H[(cve_finding, proof frame)]
+    F --> I[scan faces]
+    H --> I
+    I --> J[(face, person, frame files)]
+    J --> K[report faces]
+    J --> L[search]
 ```
 
-The discovery to check path fills the database. The other two modes work on
-what already exists: `--start_face_scan` reads active rows, and
-`--start_vuln_scan` reads an nmap XML file on disk.
+Every stage in the order an operator runs it, with real output from one lab run:
 
-### Modes
+### 1. Sweep
 
-| Flag | Task | Network? | Needs DB? |
-|------|------|----------|-----------|
-| `--start_search` | `ShodanTask` | yes (Shodan API) | yes |
-| `--start_nmap` | `NmapTask` | yes (nmap) | yes |
-| `--start_check` | `CheckTask` | yes (RTSP) | yes |
-| `--start_face_scan` | `FaceScanTask` | yes (RTSP) | yes |
-| `--start_vuln_scan` | `VulnScanTask` | **no** | no |
+```console
+$ uv run python main.py scan nmap 192.168.1.0/24
+2026-11-11 13:47:01,729 INFO Starting nmap scanning on 192.168.1.0/24
+2026-11-11 13:48:01,022 INFO Found 5 hosts using nmap scan
+2026-11-11 13:48:01,024 INFO nmap XML written to logs/nmap.xml
+2026-11-11 13:48:01,149 INFO Executors: finished nmap scan
+```
 
-### Mode summary
+A host that answers with the port closed is not a camera and is not stored. One
+`scan_run` row records the range, so the record of what a run touched is written
+even when nobody typed the range this time.
 
-- **`--start_search` (`ShodanTask`)**: runs the configured Shodan query and
-  stores each `ip:port` in the database, marked inactive and without credentials.
-  It skips the orgs and tags on the block list (universities, hospitals, schools,
-  ISPs).
-- **`--start_nmap` (`NmapTask`)**: runs `nmap -p 554 -sV` over `nmap.ip_range`,
-  tunneled through an **http** proxy (nmap cannot use socks5), and stores hosts
-  that answer on the RTSP port. It fails loud if handed a proxy scheme nmap
-  cannot use.
-- **`--start_check` (`CheckTask`)**: for every inactive camera in the database,
-  it tries the `user × password × rtsp-url` combinations from the wordlists,
-  probing up to `checkers.concurrency` cameras in parallel. `RtspProbe` opens the
-  stream and grabs one frame. On success the working credentials and the frame
-  are saved and the camera is marked active.
-- **`--start_face_scan` (`FaceScanTask`)**: for every active camera, captures
-  `face.frames_per_scan` frames, detects faces and stores their embeddings, so a
-  later scan can tell the same person apart. Needs the database. It does not
-  touch inactive cameras.
-- **`--start_vuln_scan` (`VulnScanTask`)**: reads the XML an nmap run left behind,
-  names each open service through `cpe_map.yaml`, and reports the CVEs in
-  `vuln.feed_path` that cover it. **Identification only**: it opens no connection
-  and sends no payload. Nothing in this mode contacts a device.
+### 2. The gate, when the range is not authorized
 
-### CVE identification (`scanners/vuln_probe.py`)
+```console
+$ uv run python main.py scan check
+2026-11-11 13:39:34,552 INFO Starting check task
+2026-11-11 13:39:34,751 ERROR 224 of 226 addresses are outside the declared ranges
+  ['127.0.0.1/32', '192.168.1.0/24']: 190.120.45.220, 189.15.27.223, ...
+  and 214 more; declare them in targets.allowed_cidrs, or narrow the run with --camera-id
+```
 
-| Class | Job |
-|-------|-----|
-| `NvdRecordParser` | Reduces an NVD 2.0 record to its CPE ranges and CVSS score. |
-| `CveFeed` | Loads the feed lazily and indexes it by `(vendor, product)`. |
-| `CpeMap` | Translates the `product` string a scan reports (`OpenSSH`) into a CPE vendor/product pair (`openbsd:openssh`). A new product is a YAML line, never a code change. |
-| `CpeMatchRange.covers` | Handles an exact-version CPE and the bounded ranges NVD writes (`versionStartIncluding` / `versionEndExcluding`). An unknown version only matches a pattern that names no range, so a version-less banner does not produce a pile of false findings. |
+Nothing was sent. Narrow the run to the camera you named:
 
-### Anonymisation (`scanners/proxy.py`, `scanners/proxy_tunnel.py`)
+```console
+$ uv run python main.py scan check --camera-id 232
+2026-11-11 13:40:34,977 INFO Executors: finished testing cameras
+```
 
-- `TwoCaptchaProxy` resolves a residential proxy from the 2captcha API, in
-  whitelist or login mode.
-- `AnonymousProxyClient` reaches a destination through the proxy without
-  revealing it. It always CONNECTs and tunnels, so the proxy cannot inject
-  `Proxy-Host` / `Via` / `X-Forwarded-For`. When `curl_cffi` is installed it
-  impersonates a browser TLS (JA3/JA4) and HTTP/2 fingerprint; otherwise it falls
-  back to a dependency-free stdlib CONNECT client.
-- RTSP has no proxy option in FFmpeg. `ProxyTunnel` exposes a local `127.0.0.1`
-  endpoint that relays the RTSP TCP connection through the proxy (http CONNECT or
-  a SOCKS5 handshake with DNS resolved at the exit). The probe forces
-  `rtsp_transport=tcp`, so control and media share one stream.
-- The exit node's IP, TTL and TCP fingerprint are the residential exit's, not
-  yours. That is by design.
+### 3. Read one frame through a CVE class
 
-### Storage (`models/`)
+```console
+$ uv run python main.py -v scan cve --camera-id 231
+2026-11-11 13:42:21,860 INFO Starting the CVE task
+2026-11-11 13:42:22,175 INFO 127.0.0.1:8000 matches 1 CVE(s)
+2026-11-11 13:42:22,219 INFO CVE read GET http://127.0.0.1:8000/onvif-http/snapshot?auth=...
+2026-11-11 13:42:22,316 INFO Executors: finished the CVE task
+$ ls -l logs/frames/231/
+-rw-r--r--  22096  20261111T164222Z-cve.jpg
+```
 
-| File | Role |
-|------|------|
-| `models/camera.py` | The `cam` SQLAlchemy model. |
-| `models/database.py` | `Database` owns the engine and a transactional `session_scope` (commit on success, roll back on error). |
-| `models/managers.py` | `CameraRepository`, the only place that queries the table. |
+Exit 0 even when no frame comes back: a recorded absence is a successful run, not
+a failure. The `cve_finding` rows carry the outcome and the reason.
 
-A successful check stores the working credentials and the proof frame
-(`image_b64`) on the camera row. Results live entirely in the database.
+### 4. Faces into people
+
+```console
+$ uv run python main.py scan faces --camera-id 231
+2026-11-11 12:45:33,379 DEBUG face 1 joined person 1
+2026-11-11 12:45:33,708 DEBUG face 2 joined person 1
+2026-11-11 12:45:34,103 DEBUG face 3 joined person 2
+2026-11-11 12:45:34,104 INFO 127.0.0.1:8000 holds 3 face(s)
+```
+
+Three faces in three frames became two people: faces 1 and 2 are the same person
+in two frames of one camera, face 3 is someone else. Nothing is labelled. A face
+that matches two people merges them, the older person wins, and every face and
+frame of both is kept (D35).
+
+### 5. Answer
+
+```console
+$ uv run python main.py report faces
+person 1  faces 22  first seen 2026-11-11T15:45:04Z  last seen 2026-11-11T16:42:22Z
+  camera 127.0.0.1:8000  frames 5  frame cve
+  camera 127.0.0.1:8554  frames 17  frame rtsp
+person 2  faces 2   first seen 2026-11-11T15:45:23Z  last seen 2026-11-11T15:45:23Z
+  camera 127.0.0.1:8000  frames 2  frame cve
+```
 
 ---
 
-## Installation
+## Install
 
 Dependencies use [uv](https://docs.astral.sh/uv/). `pyproject.toml` is the single
 source and `uv.lock` pins exact versions.
@@ -171,115 +232,429 @@ source and `uv.lock` pins exact versions.
 ```bash
 git clone https://github.com/iklobato/shodan_rtsp
 cd shodan_rtsp
-uv sync                       # creates .venv, installs runtime + dev deps from the lock
+uv sync                       # creates .venv, installs runtime and dev deps from the lock
 ```
 
 `uv` provisions Python 3.11 itself if missing (see `.python-version`). To install
 with plain pip, export a requirements file first:
 `uv export --no-hashes --no-dev -o requirements.txt`.
 
-A running PostgreSQL is required for anything that touches the database. The repo
-ships a `docker-compose.yml` that starts one on `localhost:5433`, matching the
-`database` block in `config.yaml.example`.
+| Piece | Why | Check |
+|-------|-----|-------|
+| `nmap` | the sweep, and the banner that names a brand | `nmap --version` |
+| `ffmpeg` | RTSP capture and the lab stream | `ffmpeg -version` |
+| Docker | Postgres 16 on port 5440 | `docker compose ps` |
+| `mediamtx` | only for the lab target | `mediamtx --help` |
+| `buffalo_l` | face model, about 280 MB, downloads on first face run | `ls ~/.insightface/models` |
+
+### The database
+
+```bash
+docker compose up -d postgres
+docker compose ps              # wait for healthy
+uv run alembic upgrade head    # creates every table; a second run changes nothing
+uv run alembic current         # 0002 (head)
+```
 
 | Command | Effect |
 |---------|--------|
-| `docker compose up -d` | Starts Postgres 16; data stays in a named volume. |
-| `docker compose ps` | Wait for `healthy`. |
-| `docker compose down` | Stops it and keeps data. |
-| `docker compose down -v` | Stops it and wipes the volume. |
+| `docker compose up -d postgres` | starts Postgres 16, data in a named volume |
+| `docker compose down` | stops it, keeps data |
+| `docker compose down -v` | stops it and wipes the volume |
 
-`curl_cffi` is installed by `uv sync` and gives the HTTP client a real browser TLS
-(JA3/JA4) fingerprint. The code keeps a stdlib CONNECT fallback for the rare case
-it is missing.
+Port 5432 and 5433 were taken on the machine this was built on, so the service
+listens on 5440 (D40).
+
+---
+
+## Lab target
+
+Two devices, both local, both fake:
+
+```text
+                 your Mac                       the pipeline sees
+   ┌────────────────────────────────┐
+   │ ffmpeg  ──publish──► mediamtx  │  rtsp://127.0.0.1:8554/h264/ch1/main/av_stream
+   │                      :8554     │
+   │                                │
+   │ lab/mock_camera.py :8000       │  http://127.0.0.1:8000/onvif-http/snapshot?auth=...
+   └────────────────────────────────┘
+```
+
+```bash
+# RTSP side
+mediamtx lab/mediamtx.yml &
+ffmpeg -loop 1 -re -i logs/faces/friends/01.jpg \
+  -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+  -r 10 -c:v libx264 -pix_fmt yuv420p -g 10 -f rtsp -rtsp_transport tcp \
+  rtsp://127.0.0.1:8554/h264/ch1/main/av_stream
+
+# CVE side
+uv run python lab/mock_camera.py --port 8000 --image logs/faces/friends/01.jpg \
+  2> logs/mock_camera.log
+```
+
+Two details cost a run each: libx264 refuses an odd width or height (hence the
+`scale`), and `-stream_loop -1` does not loop an image input (hence `-loop 1 -re`).
+
+Verify both before scanning:
+
+```console
+$ curl -s -o /tmp/snap.jpg -w '%{http_code}\n' \
+  "http://127.0.0.1:8000/onvif-http/snapshot?auth=YWRtaW46MTEK"
+200
+$ file -b /tmp/snap.jpg
+JPEG image data, JFIF standard 1.01, 239x279, components 3
+
+$ ffprobe -v error -rtsp_transport tcp -show_entries stream=codec_name,width,height \
+    -of csv=p=0 rtsp://127.0.0.1:8554/h264/ch1/main/av_stream
+h264,238,278
+```
+
+The mock is not vendor firmware. It answers the snapshot path with a JPEG, 404 to
+everything else, and sends `Server: Hikvision-Webs/DS-2CD2032-I` so a real
+`nmap -sV` names the brand and model. `docs/front-4-rig.md` records what that
+leaves unproved.
+
+---
+
+## The seven commands
+
+```bash
+uv run python main.py [--config PATH] [-v] <group> <command> [options]
+```
+
+```mermaid
+flowchart LR
+    subgraph writes
+      N[scan nmap]
+      S[scan shodan]
+      C[scan check]
+      V[scan cve]
+      F[scan faces]
+    end
+    subgraph reads
+      R[report faces]
+      Q[search]
+      M[measure threshold]
+    end
+    N --> DB[(Postgres)]
+    S --> DB
+    C --> DB
+    V --> DB
+    F --> DB
+    DB --> R
+    DB --> Q
+    P[(pair set on disk)] --> M
+```
+
+| Command | Reaches network | Writes | One line |
+|---------|-----------------|--------|----------|
+| `scan nmap [CIDR]` | nmap over the range | `scan_run`, `camera`, `camera_observation` | find cameras |
+| `scan shodan [QUERY]` | Shodan API | same as nmap | find cameras without touching them |
+| `scan check [--camera-id N]` | RTSP port of stored cameras | `camera.url`, `user`, `password`, `status` | get in |
+| `scan cve [--camera-id N]` | HTTP, ONVIF, RTSP of stored cameras | `cve_finding`, one proof frame | read one frame per match |
+| `scan faces [--camera-id N]` | stored camera URL, only if no frame | `scan_run`, `face_frame`, `face`, `person` | who is in the frame |
+| `report faces [--person-id N]` | none | nothing | the answer |
+| `search [filters]` | none | nothing | the answer as a timeline |
+| `measure threshold [--pairs P]` | none | nothing, not even the config | the one number to trust |
+
+`--config` and `-v` come before the group: `main.py --config lab.yaml scan nmap`.
+
+### `search` filters
+
+| Flag | Takes | Example |
+|------|-------|---------|
+| `--person-id` | integer | `--person-id 1` |
+| `--camera-id` | integer | `--camera-id 231` |
+| `--since` | ISO 8601, read as UTC | `--since 2026-11-11T00:00:00Z` |
+| `--until` | ISO 8601, read as UTC | `--until 2026-11-11T23:59:59Z` |
+
+All four combine with AND.
+
+---
+
+## Exit codes
+
+| Code | Meaning | Example |
+|------|---------|---------|
+| `0` | the command completed, including a run that found nothing | `scan cve` with no frame |
+| `1` | a refusal the operator can fix, printed with its reason | target outside the range, unknown camera id, a timestamp that is not one |
+| `2` | the command line itself is wrong | `main.py scan` with no command |
+
+```console
+$ uv run python main.py search --since nope
+2026-11-11 13:52:46,290 ERROR nope is not a timestamp: Invalid isoformat string: 'nope'
+$ echo $?
+1
+```
+
+A finding of nothing is exit 0 with output that says so, so a caller can tell
+"nothing there" apart from "it broke".
+
+### Logging
+
+| Stream | Carries |
+|--------|---------|
+| stderr | log lines, one per network step, before the call |
+| stdout | results, so they pipe |
+
+No credential value appears in any log line at any level (FR-030).
+
+---
+
+## The monitoring answer
+
+### `report faces`
+
+```console
+$ uv run python main.py report faces
+person 1  faces 22  first seen 2026-11-11T15:45:04Z  last seen 2026-11-11T16:42:22Z
+  camera 127.0.0.1:8000  frames 5  frame cve
+  camera 127.0.0.1:8554  frames 17  frame rtsp
+person 2  faces 2   first seen 2026-11-11T15:45:23Z  last seen 2026-11-11T15:45:23Z
+  camera 127.0.0.1:8000  frames 2  frame cve
+```
+
+```text
+person 1  faces 22  first seen ...  last seen ...
+│
+├── camera 127.0.0.1:8000   frames 5    frame cve     ┐ how many frames
+└── camera 127.0.0.1:8554   frames 17   frame rtsp    ┘ and which path found them
+```
+
+`--person-id N` narrows it to one person.
+
+### `search`
+
+```console
+$ uv run python main.py search --since 2026-11-11T00:00:00Z
+2026-11-11T15:45:04Z  person 1  camera 127.0.0.1:8000  frame cve
+2026-11-11T15:45:14Z  person 1  camera 127.0.0.1:8000  frame cve
+2026-11-11T15:45:23Z  person 2  camera 127.0.0.1:8000  frame cve
+2026-11-11T15:52:06Z  person 1  camera 127.0.0.1:8554  frame rtsp
+2026-11-11T16:42:22Z  person 1  camera 127.0.0.1:8000  frame cve
+```
+
+One line per appearance, oldest first. A person with no label prints as
+`person <id>`, never as a name, because nothing labels a person automatically
+(D28).
+
+---
+
+## Measure the face threshold
+
+`face.match_threshold` ships as a placeholder of `0.5`. Do not trust it until it is
+measured on a labelled pair set (D16, SC-010).
+
+The set is one directory per identity, two or more images each:
+
+```text
+logs/faces/
+├── friends/
+│   ├── 01.jpg
+│   └── 02.jpg
+└── astronaut/
+    ├── 01.jpg
+    └── 02.jpg
+```
+
+```mermaid
+flowchart LR
+    A[friends/01.jpg] ---|same identity| B[friends/02.jpg]
+    C[astronaut/01.jpg] ---|same identity| D[astronaut/02.jpg]
+    A -.->|different identity| C
+    B -.->|different identity| D
+```
+
+Every pair inside one directory is a same identity pair. Every pair across two
+directories is a different identity pair.
+
+```console
+$ uv run python main.py measure threshold --pairs logs/faces
+same identity        pairs 2   min 0.978  mean 0.986  max 0.993
+different identity   pairs 4   min 0.039  mean 0.042  max 0.044
+separation           0.934 between the largest different and the smallest same
+```
+
+```text
+ 0.0        0.1        0.5        0.9   0.978  1.0
+  |----------|----------|----------|-----|---|
+   different identity ..........  same identity
+                              ^
+                        put the threshold in this gap
+```
+
+The command reads only and writes nothing, including the config: a value that
+changes itself is not a measured value. Pick a value in the gap, write it into
+`face.match_threshold` by hand, and record the raw output and the pair set in the
+front report. A directory with fewer than two images is refused with exit 1,
+because one image cannot form a pair.
+
+The run above used two identities of two images each, which shows the tool works
+and does not settle a production value: two people say nothing about the pairs
+that will actually be confused. Widen the set before relying on the number.
+
+---
+
+## CVE matching
+
+`scan cve` matches what a scan already stored against an NVD feed, then reads each
+match once through the read-only classes of the batch. It never opens a connection
+for identification, and it sends no payload.
+
+```mermaid
+flowchart LR
+    A[(camera_observation)] --> B{banner to CPE}
+    B -->|cpe_map.yaml| C[NVD feed]
+    C -->|match| D[read-only classes, in order]
+    D -->|frame| E[(cve_finding + proof frame)]
+    D -->|no frame| F[(cve_finding + reason)]
+```
+
+### Build the feed
+
+The feed is NVD 2.0 JSON. Do **not** download the full year files: hundreds of MB,
+and the loader holds the whole file in memory. Pull one product subset per product
+you mapped, then merge.
+
+```bash
+curl -sG 'https://services.nvd.nist.gov/rest/json/cves/2.0' \
+  --data-urlencode 'virtualMatchString=cpe:2.3:o:hikvision:ds-2cd2032-i_firmware' \
+  --data-urlencode 'resultsPerPage=2000' -o nvdcve-hikvision.json
+
+jq -s '{format:"NVD_CVE", version:"2.0",
+        vulnerabilities: [.[].vulnerabilities[]]}' \
+  nvdcve-*.json > nvdcve-2.0.json
+```
+
+| Gotcha | Fix |
+|--------|-----|
+| `cpeName` answers `HTTP 404` | use `virtualMatchString` on the same endpoint |
+| the API rate-limits | `sleep 6` between calls |
+| matching on the hardware CPE finds nothing | a camera CVE sits on the model firmware CPE, part `o` |
+
+A ready-made camera subset ships in `samples/nvd_camera_sample.json`.
+
+### Map your products
+
+`cpe_map.yaml` translates the `product` string a scan reports into a CPE. Check the
+name exists in the NVD dictionary first:
+
+```console
+$ curl -sG 'https://services.nvd.nist.gov/rest/json/cpes/2.0' \
+    --data-urlencode 'cpeMatchString=cpe:2.3:o:hikvision:ds-2cd2032-i_firmware' \
+    --data-urlencode 'resultsPerPage=1' | jq .totalResults
+1
+```
+
+`totalResults` above 0 means the name is real. `0` means it was invented and the
+entry would quietly match nothing. A new product is a YAML line, never a code
+change.
+
+---
+
+## Data model
+
+Seven entities. Frames are files, the database holds the path (D17).
+
+```text
+ ┌────────────┐        ┌─────────────────────┐
+ │ scan_run   │        │ camera              │
+ │ kind       ├───────►│ ip, port, vendor    │
+ │ target_set │        │ url, user, status   │
+ │ started_at │        └──────┬──────────────┘
+ └────────────┘               │
+                    ┌─────────┼──────────┐
+                    ▼         ▼          ▼
+        ┌────────────────┐ ┌────────┐ ┌──────────────┐
+        │camera_         │ │cve_    │ │face_frame    │
+        │observation     │ │finding │ │path, source  │
+        └────────────────┘ └────────┘ └──────┬───────┘
+                                             ▼
+                                        ┌────────┐
+                                        │ face   │
+                                        └───┬────┘
+                                            ▼
+                                        ┌────────┐
+                                        │ person │
+                                        └────────┘
+```
+
+| File | Role |
+|------|------|
+| `models/camera.py`, `models/observation.py`, `models/frame.py`, `models/finding.py`, `models/face.py`, `models/person.py`, `models/scan_run.py` | the seven entities of `data-model.md` |
+| `models/database.py` | `Database` owns the engine and a transactional `session_scope` (commit on success, roll back on error, always close) |
+| `models/managers.py` | one repository per entity, the only place that queries a table; the reports read through `PersonReader`, which cannot write |
+| `migrations/versions/` | `0001_initial_schema`, `0002_migrate_legacy_cam` |
 
 ---
 
 ## Configuration
 
-All settings and keys live in one `config.yaml`, which is git-ignored. Start from
-the template:
+All settings and keys live in one `config.yaml`, which is git-ignored.
 
 ```bash
 cp config.yaml.example config.yaml
-# then edit config.yaml
 ```
 
-### Settings
+### The settings that matter most
+
+| Key | Example | What it does |
+|-----|---------|--------------|
+| `targets.allowed_cidrs` | `["192.168.1.0/24"]` | **the authorization**. Empty authorizes nothing |
+| `nmap.ip_range` | `192.168.1.0/24` | default target of `scan nmap` |
+| `nmap.ports` | `[554, 80, 443, 8000, 8080, 8554, 34567]` | RTSP plus the web and ONVIF ports of D15 |
+| `nmap.xml_path` | `logs/nmap.xml` | raw XML of the sweep, the record of what nmap saw |
+| `frames.root_path` | `logs/frames` | where frame files land |
+| `face.match_threshold` | `0.5` | minimum cosine similarity. Placeholder until measured |
+| `face.enabled` | `true` | `false` skips the face scan |
+| `brands.signature_path` | `brands.yaml` | brand signatures and brand credentials, as data (D27) |
+| `database.host` | `127.0.0.1:5440` | `host[:port]` |
+
+<details>
+<summary><b>Every key, the full table</b></summary>
 
 | Key | Default in example | What it does |
 |-----|--------------------|--------------|
-| `shodan.api_key` | placeholder | Shodan API key. |
-| `shodan.query` | `screenshot.label:webcam,cam country:BR` | Shodan query for `--start_search`. |
-| `checkers.wordlist_users` | `wordlists/users.txt` | Usernames, one per line. |
-| `checkers.wordlist_passwords` | `wordlists/passwords.txt` | Passwords, one per line. A blank line means "no password". |
-| `checkers.wordlist_rtsp_urls` | `wordlists/rtsp_urls.txt` | URL templates, one per line. |
-| `checkers.randomize` | `true` | Shuffle the credential combinations. |
-| `checkers.concurrency` | `1` | Parallel RTSP probes. See notes below. |
-| `nmap.ip_range` | `10.0.0.0/24` | Range to sweep. Only ranges you are authorized to scan. |
-| `nmap.parallelism` | `0` | `0` keeps nmap defaults; `> 0` adds `-T4 --min-parallelism N`. |
-| `nmap.xml_path` | `logs/nmap.xml` | Raw XML of the sweep. `--start_vuln_scan` reads this. |
-| `vuln.nmap_xml` | `logs/nmap.xml` | XML the vuln mode reads. Keep in step with `nmap.xml_path`. |
-| `vuln.feed_path` | `nvdcve-2.0.json` | NVD 2.0 JSON feed. |
-| `vuln.cpe_map_path` | `cpe_map.yaml` | Product string to CPE vendor/product. |
-| `vuln.min_cvss` | `0.0` | Drops findings below this base score from the report. |
-| `vuln.report_path` | `logs/vuln_report.json` | JSON output. |
-| `proxy.enabled` | `true` | `false` sends probes straight from your IP. Private ranges need `false`. |
-| `proxy.token` | placeholder | 2captcha token. |
-| `proxy.auth_mode` | `whitelist` | `whitelist` or `login`. |
-| `proxy.protocol` | `socks5` | `http`, `https` or `socks5`. |
-| `proxy.country` | `us` | Residential exit country. |
-| `database.user` | placeholder | Postgres user. |
-| `database.password` | placeholder | Postgres password. |
-| `database.host` | `localhost:5433` | `host[:port]`; 5433 matches `docker-compose.yml`. |
-| `database.db` | `cameras` | Database name. |
+| `shodan.api_key` | placeholder | Shodan API key |
+| `shodan.query` | `net:203.0.113.0/24 screenshot.label:webcam,cam` | Shodan query for `scan shodan` |
+| `targets.allowed_cidrs` | `["203.0.113.0/24"]` | the one list of what this scanner may reach |
+| `checkers.wordlist_users` | `wordlists/users_small.txt` | usernames, one per line |
+| `checkers.wordlist_passwords` | `wordlists/passwords_small.txt` | passwords, one per line; a blank line means no password |
+| `checkers.wordlist_rtsp_urls` | `wordlists/rtsp_urls_small.txt` | URL templates, one per line |
+| `checkers.randomize` | `true` | shuffle the credential combinations |
+| `checkers.concurrency` | `1` | parallel RTSP probes |
+| `nmap.ip_range` | `192.168.1.0/24` | range `scan nmap` sweeps when no target is given |
+| `nmap.ports` | `[554, 80, 443, 8000, 8080, 8554, 34567]` | ports of the sweep |
+| `nmap.parallelism` | `0` | `0` keeps nmap defaults, `> 0` adds `-T4 --min-parallelism N` |
+| `nmap.xml_path` | `logs/nmap.xml` | raw XML of the sweep |
+| `vuln.feed_path` | `nvdcve-2.0.json` | NVD 2.0 JSON feed |
+| `vuln.cpe_map_path` | `cpe_map.yaml` | product string to CPE vendor:product |
+| `vuln.min_cvss` | `0.0` | drops findings below this base score |
+| `vuln.web_ports` | `[80, 443, 8000, 8080]` | tried after the port the camera was seen on |
+| `vuln.timeout_seconds` | `8.0` | one network step; the RTSP probe uses the same bound |
+| `face.enabled` | `true` | `false` skips the face scan |
+| `face.frames_per_scan` | `5` | frames captured over RTSP per camera per scan |
+| `face.frame_interval` | `2.0` | seconds between those frames |
+| `face.match_threshold` | `0.5` | minimum cosine similarity for one person |
+| `face.pairs_path` | `lab/faces` | the labelled pair set `measure threshold` reads |
+| `frames.root_path` | `logs/frames` | where frame files land |
+| `brands.signature_path` | `brands.yaml` | brand signatures and credentials, as data |
+| `database.user` / `.password` | placeholder | Postgres credentials |
+| `database.host` | `localhost:5440` | `host[:port]` |
+| `database.db` | `cameras` | database name |
 
-Minimal example:
-
-```yaml
-shodan:
-  api_key: "<your_shodan_api_key>"
-  query: "screenshot.label:webcam,cam country:BR"
-checkers:
-  wordlist_users: wordlists/users.txt
-  wordlist_passwords: wordlists/passwords.txt
-  wordlist_rtsp_urls: wordlists/rtsp_urls.txt
-  randomize: true
-  concurrency: 1
-nmap:
-  ip_range: 10.0.0.0/24
-  parallelism: 0
-  xml_path: logs/nmap.xml
-vuln:
-  nmap_xml: logs/nmap.xml
-  feed_path: nvdcve-2.0.json
-  cpe_map_path: cpe_map.yaml
-  min_cvss: 0.0
-  report_path: logs/vuln_report.json
-proxy:
-  enabled: true
-  token: "<your_2captcha_token>"
-  auth_mode: whitelist
-  protocol: socks5
-  country: us
-database:
-  user: "<postgres_user>"
-  password: "<postgres_password>"
-  host: "localhost:5433"
-  db: "cameras"
-```
+</details>
 
 ### Config notes
 
 | Setting | Note |
 |---------|------|
-| `proxy.enabled: false` | Sends every probe straight from your own IP. The only mode that works for a private range (`192.168.x.x` is unreachable through a residential exit) and for a box whose 2captcha account is down. Public scans must leave it `true`. |
-| `proxy.auth_mode: whitelist` | Add your public IP in the 2captcha dashboard first. There is no API for that step. |
-| `proxy.protocol: socks5` | Needs `curl_cffi` for the HTTP client. The nmap path always uses an http proxy, because nmap does not support socks5. |
-| `checkers.concurrency` | How many RTSP probes `--start_check` runs in parallel. Probes are I/O-bound. `1` is sequential. The real ceiling is the proxy exit, not your CPU. Too many concurrent streams through one residential exit get throttled or banned. Raise it gradually (8 to 16) and watch the error rate. All probes still leave via the proxy. |
-| `nmap.parallelism` | nmap parallelises hosts itself. `0` leaves the defaults. `> 0` runs the sweep with `-T4 --min-parallelism N`. |
-| `nmap.xml_path` / `vuln.nmap_xml` | Two settings for one file. The first says where a sweep writes its XML. The second says what the vuln mode reads. Point them at the same path unless you feed a scan from elsewhere. |
-| `vuln.min_cvss` | Filters the report only. The feed is indexed the same way either way. `0.0` keeps everything NVD scored. |
+| `targets.allowed_cidrs` | The authorization, written once. It guards the Shodan query and every command that reaches a stored camera. A run narrowed with `--camera-id N` reaches the camera the operator named, which is the authorization itself, so it is not gated |
+| `face.match_threshold` | A minimum cosine similarity over the L2-normalized 512-d embedding: higher means more alike, 1.0 is the same direction (D44) |
+| `checkers.concurrency` | Probes are I/O-bound. Raise gradually and watch the error rate |
+| `nmap.xml_path` | Where a sweep writes its XML. `scan cve` does not read it: it matches what the scan stored (D30) |
 
 The config is validated on load (`scanners/config.py`): a missing section fails
 fast with a clear error. `config.yaml` holds secrets and is never committed. Only
@@ -287,321 +662,29 @@ fast with a clear error. `config.yaml` holds secrets and is never committed. Onl
 
 ---
 
-## Usage
+## Troubleshooting
 
-```bash
-uv run python main.py [--start_search | --start_nmap | --start_check
-                      | --start_face_scan | --start_vuln_scan]
-                     [--config config.yaml] [-v]
-```
+Every row below is a real failure seen while building this, with the real answer.
 
-Exactly one mode is required. The CLI flags are only the mode, `--config` and
-`-v`. Everything else (parallelism, proxy, wordlists, DB, CVE settings) comes from
-the config file. Tune a run by editing `config.yaml`, or keep several profiles
-and choose one with `--config`.
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| sweep finds 5 hosts, zero cameras | hosts answer ICMP but no camera port is open | `nmap -Pn -p 554,80,... /24` to skip host discovery, and check the ARP table |
+| devices appear in ARP but every port is `filtered` | MAC is randomized: a phone or laptop with a firewall | not a camera, ignore |
+| ARP shows only the router | guest SSID or client isolation separates the clients | move the camera to the main SSID |
+| camera not in ARP at all | no DHCP lease: it sits on its factory IP, or never associated | try `192.168.1.64` (Hikvision), `192.168.1.108` (Dahua) |
+| `scan check` refuses 224 addresses | stored cameras from an earlier run are outside `allowed_cidrs` | `--camera-id N`, or declare the range |
+| `bind: address already in use` on 5440 | another Postgres holds the port | `docker compose down`, or change `database.host` |
+| `libx264` refuses the frame | odd width or height | `-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2"` |
+| ffmpeg publishes one frame then stops | `-stream_loop -1` does not loop an image input | `-loop 1 -re` |
+| `method DESCRIBE failed: 404` | the RTSP path does not exist on that server | use the path the server publishes, not a wordlist guess |
+| face scan finds nothing | the frame has no face, or the model is missing | check the JPEG by hand, then `ls ~/.insightface/models` |
 
-| Flag | Meaning |
-|------|---------|
-| `--start_search` | Search Shodan (`shodan.query`) and populate the database. |
-| `--start_nmap` | Nmap sweep of `nmap.ip_range` for RTSP hosts; writes `nmap.xml_path`. |
-| `--start_check` | Test credentials against cameras already in the database. |
-| `--start_face_scan` | Detect and match faces on active cameras (needs the DB). |
-| `--start_vuln_scan` | Name the CVEs of the services in `vuln.nmap_xml`; no device is contacted. |
-| `--config PATH` | Config file to use (default `config.yaml`). |
-| `-v`, `--verbose` | Debug logging: each probe URL and the local tunnel. |
-
-Every example below was run on this repo. Log lines are real output, trimmed to
-the informative ones.
-
----
-
-## Mode details
-
-### Fill the database
-
-Two ways in. Pick one.
-
-<details>
-<summary><strong>From Shodan</strong> (<code>--start_search</code>)</summary>
-
-Runs `shodan.query`, stores each `ip:port` it has not seen before, and skips the
-orgs and tags on the block list. It spends Shodan query credits, one page per 100
-results, so check the query first.
-
-```bash
-uv run python main.py --start_search
-```
-</details>
-
-<details>
-<summary><strong>From an nmap sweep of your own network</strong> (<code>--start_nmap</code>)</summary>
-
-Stores only hosts with port 554 **open**. A host that answers with the port closed
-is not a camera. Inserting it would make `--start_check` burn a full credential run
-on every live machine on your LAN. A private range is not reachable through a
-residential exit, so this is the one case where the proxy goes off.
-
-```yaml
-# config.yaml
-nmap:
-  ip_range: 192.168.1.0/24
-  xml_path: logs/nmap.xml
-proxy:
-  enabled: false         # direct from this machine; private ranges need this
-```
+Quick reachability check, no scanner involved:
 
 ```console
-$ uv run python main.py --start_nmap
-2026-11-02 00:44:27,752 INFO Starting nmap scanning on 192.168.1.0/24
-2026-11-02 00:44:45,485 INFO Found 4 hosts using nmap scan
-2026-11-02 00:44:45,486 INFO nmap XML written to logs/nmap.xml
-2026-11-02 00:44:45,486 INFO Executors: finished nmap scan
-```
-
-Four hosts answered and none had 554 open, so the table stayed empty. The host
-count moves between runs (6 on an earlier sweep); Wi-Fi clients come and go.
-</details>
-
-### See what you collected
-
-```bash
-psql "postgresql://scanner:scanner@localhost:5433/cameras" \
-  -c "select id, ip, port, active from cam order by id desc limit 10;"
-```
-
-Rows arrive with `active = false` and no credentials. A successful check fills in
-`user`, `password`, `url` and the proof frame in `image_b64`, and flips `active`
-to true:
-
-```bash
-psql "postgresql://scanner:scanner@localhost:5433/cameras" \
-  -c "select ip, port, user, password, url from cam where active;"
-```
-
-### Test credentials
-
-`--start_check` walks every **inactive** camera and tries every combination of
-URL template × user × password. The three wordlists are plain text, one entry per
-line:
-
-```text
-wordlists/users.txt        one username per line
-wordlists/passwords.txt    one password per line (a blank line means "no password")
-wordlists/rtsp_urls.txt    one URL template per line
-```
-
-Templates take `{0}` user, `{1}` password, `{2}` host, `{3}` port:
-
-```text
-rtsp://{0}:{1}@{2}:{3}/
-rtsp://{0}:{1}@{2}:{3}/live.sdp
-rtsp://{0}:{1}@{2}:{3}/h264/ch1/main/av_stream
-rtsp://{0}:{1}@{2}:{3}/cam/realmonitor?channel=1&subtype=0
-```
-
-The shipped lists come in two sizes. The `*_small.txt` lists are
-5 URLs × 3 users × 5 passwords = **75 probes per camera**. The full ones are
-45 × 29 × 54 = **70,470**. Start small, look at the hit rate, then widen. Only
-against targets you are authorized to test.
-
-```bash
-uv run python main.py --start_check -v
-```
-
-With `-v` you see each probe and the anonymised path. The probe opens
-`rtsp://...@127.0.0.1:<port>/` (a local tunnel), which relays to the real camera
-through the proxy exit. Without `-v` you only get the summary lines. A camera that
-opens is logged at INFO either way:
-
-```text
-INFO [!] rtsp://admin:admin@10.0.0.5:554/, user: admin, password: admin
-```
-
-`checkers.concurrency` decides how many probes run at once. It is a config value,
-not a flag:
-
-```yaml
-checkers:
-  concurrency: 16        # 16 RTSP probes at once (bounded by the proxy exit)
-```
-
-The real ceiling is the proxy exit, not your CPU. Too many concurrent streams
-through one residential exit get throttled or banned. Raise it gradually (8 to 16)
-and watch the error rate.
-
-### Scan faces
-
-```bash
-uv run python main.py --start_face_scan
-```
-
-Reads the **active** rows only, so it does nothing until the check found a working
-login. `face.frames_per_scan`, `face.frame_interval` and `face.match_threshold`
-tune it. The face model (`buffalo_l`) downloads on first use into
-`~/.insightface/models` (about 280 MB).
-
-### Choose how the proxy authenticates
-
-`--start_check` and `--start_nmap` always leave via the residential proxy unless
-`proxy.enabled` is false. No flag needed. You only pick *how* it authenticates.
-
-| Mode | Use when | Config |
-|------|----------|--------|
-| `whitelist` | Your public IP is already in the 2captcha dashboard. | `auth_mode: whitelist`, `protocol: socks5` |
-| `login` | You have a gateway host, port and password from the dashboard. No IP whitelisting. | `auth_mode: login`, `protocol: http`, `gateway_host`, `gateway_port`, `gateway_password` |
-
-```yaml
-# whitelist mode: add your public IP in the 2captcha dashboard first
-proxy:
-  enabled: true
-  token: "<your_2captcha_token>"
-  auth_mode: whitelist
-  protocol: socks5       # http | https | socks5 (socks5 needs curl_cffi)
-  country: us
-
-# or login mode: gateway from the dashboard, no IP whitelisting
-proxy:
-  enabled: true
-  token: "<your_2captcha_token>"
-  auth_mode: login
-  protocol: http
-  gateway_host: "proxy.example.com"
-  gateway_port: 8080
-  gateway_password: "<gateway_password>"
-```
-
-### Tune the sweep and keep profiles
-
-`nmap.parallelism` is the other config-only knob. `0` leaves nmap defaults. `> 0`
-runs the sweep with `-T4 --min-parallelism N`.
-
-```yaml
-nmap:
-  ip_range: 10.0.0.0/24  # only ranges you are authorised to scan
-  parallelism: 200        # runs nmap with -T4 --min-parallelism 200
-```
-
-Every knob lives in the config file, so you can keep several profiles and pick one
-per run:
-
-```bash
-uv run python main.py --start_check --config config.fast.yaml -v
-uv run python main.py --start_check --config config.quiet.yaml
-```
-
----
-
-## Vuln scan (`--start_vuln_scan`)
-
-Identification only. It reads an nmap XML file, a CVE feed and a product map, and
-writes a report. It never opens a connection to a device, so it is safe to point at
-any XML you already have.
-
-<details>
-<summary><strong>Step 1: produce the XML</strong></summary>
-
-`--start_nmap` writes it for you (`nmap.xml_path`, default `logs/nmap.xml`). Any
-`nmap -sV -oX` file works too, including one over more ports than 554.
-
-```bash
-nmap -sV -oX logs/nmap.xml 192.168.1.0/24
-```
-</details>
-
-<details>
-<summary><strong>Step 2: build a CVE feed</strong></summary>
-
-The mode reads NVD 2.0 JSON. Do **not** download the full year files: they are
-hundreds of MB and the loader holds the whole file in memory. Pull one product
-subset per product you mapped, then merge.
-
-```bash
-curl -sG 'https://services.nvd.nist.gov/rest/json/cves/2.0' \
-  --data-urlencode 'virtualMatchString=cpe:2.3:a:openbsd:openssh' \
-  --data-urlencode 'resultsPerPage=2000' -o nvdcve-openssh.json
-
-jq -s '{format:"NVD_CVE", version:"2.0",
-        vulnerabilities: [.[].vulnerabilities[]]}' \
-  nvdcve-*.json > nvdcve-2.0.json
-```
-
-Use `virtualMatchString`, not `cpeName`: the `cpeName` form of the same endpoint
-answers `HTTP 404`. Add `sleep 6` between calls; the NVD API rate-limits.
-
-A ready-made subset ships in `samples/nvd_sample.json` (24 real records, trimmed
-for size) if you want to try the mode before pulling your own.
-</details>
-
-<details>
-<summary><strong>Step 3: map your products</strong></summary>
-
-`cpe_map.yaml` translates the `product` field a scan reports into a CPE. Add a line
-per product. Check the name exists in the NVD dictionary first, or the CVEs you
-find belong to a different product.
-
-```console
-$ curl -sG 'https://services.nvd.nist.gov/rest/json/cpes/2.0' \
-    --data-urlencode 'cpeMatchString=cpe:2.3:a:openbsd:openssh' \
-    --data-urlencode 'resultsPerPage=1' | jq .totalResults
-297
-```
-
-Any `totalResults` above 0 means the name is real. `0` means you invented it and
-the entry would quietly match nothing.
-</details>
-
-<details>
-<summary><strong>Step 4: run it</strong></summary>
-
-```console
-$ uv run python main.py --start_vuln_scan
-2026-11-02 00:45:04,218 INFO Read 5 services from logs/nmap.xml
-2026-11-02 00:45:04,232 INFO 10.0.0.5:22 CVE-2024-6387 (CVSS 8.1)
-2026-11-02 00:45:04,233 INFO 10.0.0.5:22 CVE-2023-38408 (CVSS 9.8)
-2026-11-02 00:45:04,233 INFO 10.0.0.5:22 CVE-2023-48795 (CVSS 5.9)
-2026-11-02 00:45:04,233 INFO 10.0.0.7:80 CVE-2021-41773 (CVSS 9.8)
-2026-11-02 00:45:04,233 INFO 4 CVE matches in 5 services
-```
-
-That run read `logs/nmap.xml`, which held `samples/nmap_sample.xml`, a hand-written
-three-host file that ships with the repo. Copy it into place to reproduce the
-output above without scanning anything:
-
-```bash
-cp samples/nmap_sample.xml logs/nmap.xml
-uv run python main.py --start_vuln_scan
-```
-
-`10.0.0.5:22` reports OpenSSH 9.2, inside the ranges of three CVEs. `10.0.0.7:80`
-reports Apache httpd 2.4.49, an exact-version match. The third host's RTSP service
-reports no product, so it matches nothing. A version-less banner does not get a
-pile of guesses.
-
-Findings are also written to `vuln.report_path` as JSON:
-
-```console
-$ jq -r '.[] | "\(.host):\(.port) \(.cve_id) \(.cvss)"' logs/vuln_report.json
-10.0.0.5:22 CVE-2024-6387 8.1
-10.0.0.5:22 CVE-2023-38408 9.8
-10.0.0.5:22 CVE-2023-48795 5.9
-10.0.0.7:80 CVE-2021-41773 9.8
-```
-
-To keep only what matters, raise `vuln.min_cvss`:
-
-```yaml
-vuln:
-  min_cvss: 7.0    # drop anything scored below 7.0
-```
-</details>
-
-### View results
-
-Active cameras and their working credentials live in the `cam` table:
-
-```bash
-psql "postgresql://scanner:scanner@localhost:5433/cameras" \
-  -c "select ip, port, user, password, url from cam where active;"
+$ ping -c1 192.168.1.64
+$ nc -vz 192.168.1.64 554 80
+$ ffprobe -v error rtsp://192.168.1.64:554/Streaming/Channels/101
 ```
 
 ---
@@ -610,24 +693,42 @@ psql "postgresql://scanner:scanner@localhost:5433/cameras" \
 
 | Task | Command |
 |------|---------|
-| Tests (DB and network are faked) | `uv run pytest -q` |
+| Tests (DB and network faked) | `uv run pytest -q` |
 | Lint | `uv run ruff check .` |
 | Add a dependency | `uv add <pkg>` |
 | Add a dev dependency | `uv add --dev <pkg>` |
 
-The code follows an OO/SOLID structure: strategies behind `typing.Protocol`
-(`Fetcher` backends, RTSP `Transport`), dependency injection at the composition
-root (`main.py`), context managers over `try/finally`, and dispatch tables over
-`if/elif`.
+The tests run against an in-memory SQLite database and injected fakes, so the
+whole suite passes with no Postgres, no camera and no network.
+
+The code follows an OO/SOLID structure: one type per concept, strategies behind
+`typing.Protocol`, dependency injection at the composition root (`main.py`),
+context managers over `try/finally`, and dispatch tables over `if/elif`.
+
+### Where the decisions live
+
+| Document | Holds |
+|----------|-------|
+| `docs/decisions/2026-11-11-shodan-rtsp-prod-ready.md` | the 43 settled decisions |
+| `.specify/memory/constitution.md` | the binding rules of this repository |
+| `specs/001-camera-monitoring-pipeline/spec.md` | what is built and why |
+| `specs/001-camera-monitoring-pipeline/research.md` | R1 to R11, the grounded findings |
+| `specs/001-camera-monitoring-pipeline/data-model.md` | the seven entities |
+| `specs/001-camera-monitoring-pipeline/contracts/cli.md` | the command line contract |
+| `specs/001-camera-monitoring-pipeline/quickstart.md` | the lab runbook |
+| `docs/front-*.md` | what each front proved, with raw output |
 
 ---
 
 ## Disclaimer
 
-For education and authorized security research only. Do not use it against systems
-you do not own or lack written permission to test. The authors are not responsible
-for misuse or damage.
+This is a security research tool. It is provided as is, with no warranty. The
+author is not responsible for misuse, for damage caused by a run, or for the legal
+consequences of reaching a device you do not own. Reading a frame from a camera you
+do not control is unauthorized access and interception in most jurisdictions. The
+gate exists to make the authorized range explicit; it does not make a wrong range
+legal.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT.

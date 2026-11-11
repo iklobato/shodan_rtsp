@@ -1,0 +1,471 @@
+---
+description: "Task list for the camera monitoring pipeline feature"
+---
+
+# Tasks: Camera Monitoring Pipeline
+
+**Input**: `specs/001-camera-monitoring-pipeline/`
+**Prerequisites**: plan.md, spec.md, research.md (R1 to R11), data-model.md, contracts/cli.md, contracts/brand-signatures.md, quickstart.md
+
+**Tests**: included, because the specification requires them (FR-033) and the constitution
+makes a test that can fail a non-negotiable. Tests are written first and must fail before
+the implementation lands.
+
+**Organization**: phases follow the execution order of decision D12, which is not the
+priority order of the spec. The spec priorities say what is worth most; D12 says what has
+to land first so that later fronts do not fight over the same files. The cleanup of US5
+therefore runs before identification, because it touches `scanners/task.py`,
+`scanners/rtsp_probe.py` and `scanners/config.py`, which US2, US3 and US4 also touch.
+
+**Delivery**: one branch and one reviewed PR per front (D32). Each phase below is one front.
+
+## Format: `[ID] [P?] [Story] Description`
+
+- **[P]**: can run in parallel: different files, no dependency on an incomplete task
+- **[Story]**: US1 to US5, mapped to the user stories of spec.md
+- Every task names the exact file it touches
+
+## Path Conventions
+
+Single project at the repository root: `main.py`, `models/`, `scanners/`, `tests/`,
+`alembic/`, and the data files `brands.yaml` and `cpe_map.yaml`.
+
+---
+
+## Phase 1: Setup (Shared Infrastructure)
+
+**Purpose**: the dependency, the config sections and the database target, before any front starts.
+
+- [x] T001 Add the `alembic` dependency with `uv add alembic` in `pyproject.toml` and `uv.lock` (authorized by D4)
+- [x] T002 [P] Add the `frames` and `brands` sections to the config models and remove the `proxy` section in `scanners/config.py` (deviation D-1: the `proxy` section stays until Front 2, because the proxy code it feeds is still live)
+- [x] T003 [P] Update `config.yaml.example`: drop the proxy section, add `frames.root_path` and `brands.signature_path`, set the database host to `localhost:5440` (deviation D-1: the proxy section stays for the same reason)
+- [x] T004 [P] Move the postgres host port from 5433 to 5440 in `docker-compose.yml` (D40)
+- [x] T005 [operator] Update the local `config.yaml` by hand: database host `localhost:5440`, proxy section removed. The file is git-ignored and holds credentials, so no tool and no agent edits it
+
+**Checkpoint**: `docker compose up -d postgres` starts, and `uv run python -c "import alembic"` succeeds.
+
+---
+
+## Phase 2: Foundational (Blocking Prerequisites)
+
+**Purpose**: the lab rig. Every front is done only with a real run and raw output (D24), so the
+target has to exist before the fronts that are verified against it.
+
+- [x] T006 Start `mediamtx` and publish a looped stream. Blocks US1, US4. Done in Front 5 with the command `quickstart.md` step 4 now carries: `mediamtx lab/mediamtx.yml`, then `ffmpeg -loop 1 -re -i logs/faces/friends/01.jpg -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -r 10 -c:v libx264 -pix_fmt yuv420p -g 10 -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:8554/h264/ch1/main/av_stream`. The `lab/face.mp4` of the original text does not exist in the repository (D-30), and mediamtx with no config file serves only declared paths (D-29)
+- [x] T007 [P] Supply the face pair set for the threshold measurement. Blocks US4. Done in Front 5: two public sample images per identity under `logs/faces`, one cropped out of the insightface group photo and one from the scikit image samples, the second image of each identity being the first one resized and re-encoded (D-25, `docs/front-5-report.md` section 3)
+- [ ] T008 Install FEMU or FirmAE and emulate an old Hikvision build. Blocks US3 only, so it can run in parallel with US1 and US5 (not done: no QEMU on this host and no `/dev/kvm` on the Mac or in the Docker VM, measured in `docs/front-4-rig.md`; D42 names the fallback that was taken instead)
+- [x] T009 Write the rig document under `docs/` with the raw output of `GET /onvif-http/snapshot?auth=YWRtaW46MTEK` against the emulated device, or the recorded reason it could not be made to answer (D42). If the fallback mock is used, the document must say so in the first line
+
+**Checkpoint**: the RTSP stream answers, the face pairs are on disk, and the rig document states the state of the emulation.
+
+---
+
+## Phase 3: User Story 1 - A database that remembers history (Priority: P1) 🎯 MVP
+
+**Goal**: the seven entities of data-model.md, created by the first Alembic revision, plus the
+subcommand skeleton with `scan nmap` and `scan shodan`.
+
+**Independent Test**: on an empty database, `uv run alembic upgrade head` twice, then one scan of one lab camera on one port, then read the camera, the scan and the observation rows back.
+
+### Tests for User Story 1
+
+- [x] T010 [P] [US1] Test that the migration from zero creates every table, that a second run changes nothing, and that `alembic downgrade base` returns the database to zero tables, in `tests/test_migrations.py`
+- [x] T011 [P] [US1] Test the camera validation and the status enum, including the failure path for a bad port and an unparsable address, in `tests/test_camera_model.py`
+- [x] T012 [P] [US1] Test that one scan writes exactly one observation per camera per port and that a repeated scan does not duplicate the camera, in `tests/test_observation.py`
+- [x] T013 [P] [US1] Test that a scan run records the target set it reached, in `tests/test_scan_run.py`
+
+### Implementation for User Story 1
+
+- [x] T014 [US1] Create the declarative base with the constraint naming convention of R2 in `models/base.py`
+- [x] T015 [US1] Create the `camera`, `scan_run` and `camera_observation` entities in `models/camera.py`, `models/scan_run.py` and `models/observation.py`
+- [x] T016 [US1] Create the `cve_finding`, `face_frame`, `face` and `person` entities in `models/finding.py`, `models/frame.py`, `models/face.py` and `models/person.py`
+- [x] T017 [US1] Wire the existing engine and session handling to the new base in `models/database.py`
+- [x] T018 [US1] Initialise Alembic: `alembic init alembic`, then wire `target_metadata` and `transaction_per_migration=True` in `alembic/env.py` and `alembic.ini` (deviation D-2: run as `alembic init migrations`, so the revision directory is `migrations/`; see the note below)
+- [x] T019 [US1] Write the first revision creating the whole schema in `alembic/versions/0001_initial_schema.py` (deviation D-2: the file is at `migrations/versions/0001_initial_schema.py`)
+- [x] T020 [US1] Replace the repositories with one per entity in `models/managers.py` (deviation D-3: only the repositories Front 1 calls exist so far, `CameraRepository`, `ScanRunRepository` and `CameraObservationRepository`; the rest arrive with the front that uses them, `PersonRepository` with T067)
+- [x] T021 [US1] Restructure `main.py` into subcommands with a dispatch table, registering `scan nmap` and `scan shodan` (D34, D38, R7)
+- [x] T022 [US1] Record the target set on the scan run in `scanners/task.py`
+- [x] T078 [US1] Configure the service scan port list of D15 (554, 80, 443, 8000, 8080, 8554, 34567) as `nmap.ports` in `scanners/config.py` and `config.yaml.example`, and use it in the nmap task in `scanners/task.py` (FR-011)
+- [x] T023 [US1] Validate the Shodan query against the declared CIDR list before the API call in `scanners/task.py` (D18). Landed as `ShodanScope` in `scanners/task.py`, plus `shodan.allowed_cidrs` in `scanners/config.py` and `config.yaml.example`
+- [x] T024 [US1] Lab run: `alembic upgrade head` twice and `scan nmap 127.0.0.1/32` against the lab, with the raw output pasted into the front report
+
+**Checkpoint**: the schema exists from zero, and one scan produces the rows of acceptance scenario 2.
+
+### Deviations recorded during Front 1
+
+- **D-1 (T002, T003)**: the `proxy` section stays in `scanners/config.py` and
+  `config.yaml.example`. `scanners/proxy.py` is still imported by `scanners/task.py` and
+  `scanners/rtsp_probe.py`, so removing the section now would leave a live code path
+  reading a config field that no longer exists. The section goes with the proxy code, in
+  Front 2 (T027 to T029). **Closed in Front 2**: the section is gone from the model and
+  from `config.yaml.example`. The local `config.yaml` still carries it and is the
+  operator's to clean, because the file is git-ignored and holds credentials; pydantic
+  ignores the extra keys, so it loads either way. See `docs/front-2-report.md` section 5.
+- **D-2 (T018, T019)**: the revision directory is `migrations/`, not `alembic/`, set through
+  `script_location` in `alembic.ini`. The path is the one the repository already uses for
+  hand-written SQL, and it keeps the generated revisions out of the reach of the
+  immutable-rules hook, which exempts a `/migrations/` path.
+- **D-3 (T020)**: `models/managers.py` holds only the three repositories Front 1 calls.
+  A repository nothing calls is dead code on arrival, so each one lands with the front
+  that uses it.
+- **D-4 (T024)**: the lab run also produced the enum-type fix in
+  `migrations/versions/0001_initial_schema.py`. The first `downgrade base` left the five
+  enum types behind, and the next `upgrade head` died on `type "camera_status" already
+  exists`. `downgrade()` now drops them, so the round trip closes.
+- **D-5 (T024)**: `migrations/env.py` reads `sqlalchemy.url` from the Alembic config when
+  the caller set it, and falls back to `config.yaml` otherwise. Without that, the
+  migration test could not point a throwaway database at the run.
+- **D-6 (FR-001, outside the task list)**: the live database carried a legacy `cam` table
+  with 229 rows. `migrations/env.py` lists it in `LEGACY_TABLES`, so autogenerate never
+  proposes dropping it. Nothing was dropped. Resolved by revision
+  `0002_migrate_legacy_cam.py`, which the user asked for after Front 1: the 229 rows move
+  into `camera` and `camera_observation` under one `scan_run` whose `target_set` records
+  that they have no declared range, and `cam` stays as it is. The raw output is in section
+  5 of `docs/front-1-report.md`, together with the risk it leaves behind: the 224 rows
+  that arrive as `unknown` are what `get_random_without_frame()` selects, so the check
+  task needs its own target gate in Front 3 before `scan check` runs.
+
+---
+
+## Phase 4: User Story 5 - A code base the other fronts can be trusted on (Priority: P5)
+
+**Goal**: remove the retired proxy path, the dead code, the credential log line and the stale
+docs, so the fronts that follow touch a smaller tree.
+
+**Independent Test**: `uv run pytest -q` and `uv run ruff check .` before and after, with the retired tests gone and the direct path still covered.
+
+### Tests for User Story 5
+
+- [x] T025 [P] [US5] Test that no credential value reaches any log line, at any level, in `tests/test_logging.py`
+- [x] T026 [P] [US5] Test that the direct RTSP transport still works after the proxy removal, in `tests/test_rtsp_direct.py`
+
+### Implementation for User Story 5
+
+- [x] T027 [US5] Delete `scanners/proxy.py` and `scanners/proxy_tunnel.py` (D11)
+- [x] T028 [US5] Remove the proxy branch of the nmap check and the proxy config wiring in `scanners/task.py` and `scanners/config.py`
+- [x] T029 [US5] Delete the proxy tests and remove `curl_cffi` from `pyproject.toml` and `uv.lock`
+- [x] T030 [US5] Remove the credential log line at `scanners/rtsp_probe.py:146`
+- [x] T031 [US5] Delete the unused `_sanitize_city` helper that mutates its input in `models/managers.py`
+- [x] T032 [US5] Remove the unreachable low-priority branch and the dead `_LOW_PRIORITY_COUNT` class state in `scanners/task.py`
+- [x] T033 [US5] Delete `_probe_names.py`, `docs/proxy-investigation.md`, `proxylist.txt` and `.serena/` (D23)
+- [x] T034 [US5] Trim `docs/KNOWLEDGE.md` to a dated session log, moving current state to the README and to `docs/decisions/` (D36)
+- [x] T035 [US5] Lab run: `uv run pytest -q` and `uv run ruff check .` before and after, with both outputs pasted into the front report
+
+**Checkpoint**: the suite passes with the retired tests gone, and no credential appears in a log.
+
+### Deviations recorded during Front 2
+
+- **D-7 (T030)**: the credential leak was three log lines, not the one T030 named. The test
+  of T025 found the DEBUG URL line and the DEBUG no-frame line; reading the file found the
+  INFO user/password line. All three now log the address and the port only, and the test
+  keeps a positive control so it fails for the right reason. `docs/front-2-report.md`
+  section 2.
+- **D-8 (T034)**: the current-state sections of `docs/KNOWLEDGE.md` went to `plan.md`,
+  `contracts/cli.md` and `docs/decisions/`, not to the README. The plan keeps the README
+  rewrite in Front 5 (T074), after the commands it documents exist, so moving text there now
+  would document commands that are not wired yet.
+- **D-9 (T027)**: `Transport` and `DirectTransport` stay, now with a single implementation.
+  Removing them is a refactor of the probe and not a deletion of the proxy, and the plan does
+  not retire them. Flagged in `docs/front-2-report.md` section 5.
+
+---
+
+## Phase 5: User Story 2 - Identify the camera make and model (Priority: P2)
+
+**Goal**: keep the raw banner as evidence, drive brand detection and the brand credential set
+from `brands.yaml`, and attach the vulnerable version range from the CVE map.
+
+**Independent Test**: a stored banner of a known camera yields vendor, product and version with its raw evidence kept; a device matching no signature is stored as unknown with its banner kept; a brand added only to `brands.yaml` is detected with no code change.
+
+### Tests for User Story 2
+
+- [x] T036 [P] [US2] Test brand detection from a banner through `brands.yaml`, including a brand added only to the file, in `tests/test_brand_detection.py`
+- [x] T037 [P] [US2] Test that an unmatched device is stored as unknown with its raw banner kept, in `tests/test_brand_unknown.py`
+- [x] T038 [P] [US2] Test that a product in the CVE map attaches its version range to the camera, in `tests/test_version_range.py`
+- [x] T039 [P] [US2] Test that a malformed `brands.yaml` fails at load with the offending line named, in `tests/test_brands_file.py`
+
+### Implementation for User Story 2
+
+- [x] T040 [US2] Write `brands.yaml` with the brand entries of the data contract, starting with the brands the current code already knows
+- [x] T041 [US2] Rewrite `scanners/brand_probe.py` to load `brands.yaml`, dropping the hardcoded pattern table and the duplicated `_generic_nginx`
+- [x] T042 [US2] Store the raw banner fields on the camera instead of discarding them at `scanners/task.py:42`
+- [x] T043 [US2] Write the interpreted vendor, product and version to the camera in `scanners/task.py`
+- [x] T044 [US2] Try the brand credential set before the generic wordlists in the check task (D22)
+- [x] T045 [US2] Register `scan check` in `main.py`
+- [x] T046 [US2] Lab run: identify the lab camera and a device that matches no signature, with both raw outputs pasted into the front report
+
+**Checkpoint**: acceptance scenarios 1 to 4 of US2 hold against the lab.
+
+### Deviations recorded during Front 3
+
+- **D-10 (T044)**: `shodan.allowed_cidrs` moved to a new top-level `targets.allowed_cidrs`,
+  as decided in the grill. One list now guards the Shodan query and every command that
+  reaches a stored camera, so the authorization is written once. `config.yaml.example` and
+  `quickstart.md` follow. The local `config.yaml` has no `targets:` section yet, so its
+  declared list is empty and every wide `scan check` is refused.
+- **D-11 (T044)**: `ShodanScope` is renamed `TargetGate` and gained `require_reachable`,
+  the check over the addresses already in the database. The old name said Shodan; the type
+  now guards two ways of reaching an address. `docs/front-1-report.md` keeps the old name
+  for the state it recorded.
+- **D-12 (T044)**: a run narrowed with `scan check --camera-id N` is not gated, as decided:
+  naming the camera is the authorization. The gate is what refuses the wide run.
+- **D-13 (T040)**: the four `generic_*` entries are not in `brands.yaml`. They duplicated
+  `wordlists/rtsp_urls_small.txt` and the password file; the generic set is still tried,
+  through the wordlists, after the brand set (D22).
+- **D-14 (T041)**: `NmapTask` takes an `identifier` second, so it has three parameters and
+  the immutable rules hold. `ShodanTask` and `CheckTask` take one frozen deps object for the
+  same reason.
+- **D-15 (T041)**: `ruff format` is not enforced in this repository. `ruff format --check .`
+  flags nine files, four of them untouched by any front. Only `ruff check` runs, through the
+  quality hook. Reformatting the repository is its own decision.
+
+---
+
+## Phase 6: User Story 3 - Obtain a frame through a known CVE, read only (Priority: P3)
+
+**Goal**: three CVE classes, one module each, tried in order until one yields a frame, with the
+outcome and the reason recorded either way.
+
+**Independent Test**: against the emulated firmware the bypass returns a JPEG with the device state unchanged; against a device that does not answer, a recorded reason and no crash.
+
+### Tests for User Story 3
+
+- [x] T047 [P] [US3] Test the finding invariants: a frame is recorded exactly when one was obtained, and a candidate without a frame always carries a reason, in `tests/test_cve_finding.py`
+- [x] T048 [P] [US3] Test that a class yielding no frame falls through to the next class, in `tests/test_cve_class_order.py`
+- [x] T049 [P] [US3] Test the read-only property: the transport records every request and the test asserts the exact declared reads, the method set, and at most one frame, in `tests/test_cve_read_only.py` (deviation D-16: the reads are not GET-only, because R5 needs the form POST of the Selea read and the SOAP POST of the ONVIF read; the assertion is the five declared reads and no other)
+- [x] T050 [P] [US3] Test that a timeout on one step is recorded and does not hang the run, in `tests/test_cve_timeout.py`
+- [x] T079 [P] [US3] Test that a successful ONVIF read records the model and the firmware on the camera, in `tests/test_onvif_info.py`
+
+### Implementation for User Story 3
+
+- [x] T051 [US3] Define the class interface, the attempt result and the outcome enum in `scanners/cve/base.py`
+- [x] T052 [P] [US3] Implement the authentication bypass module for CVE-2017-7921 in `scanners/cve/auth_bypass.py`
+- [x] T053 [P] [US3] Implement the unauthenticated read module for CVE-2025-34022 and CVE-2016-15055 in `scanners/cve/unauth_read.py`
+- [x] T054 [P] [US3] Implement the unauthenticated ONVIF module in `scanners/cve/unauth_onvif.py`, returning the model and the firmware alongside the frame (FR-019)
+- [x] T055 [US3] Implement the on-disk frame layout of R8 in `scanners/frames.py`
+- [x] T056 [US3] Make the CVE task read observations from the database, record findings, and write the model and the firmware of an ONVIF success onto the camera in `scanners/vuln_task.py` (D30, FR-019)
+- [x] T057 [US3] Set every network step of an attempt to time out rather than hang in `scanners/cve/`
+- [x] T058 [US3] Register `scan cve` in `main.py`, exiting 0 when the run completed without a frame
+- [x] T059 [US3] Lab run: capture the device state, run `scan cve`, capture the device state again, and paste both plus the raw response into the front report
+
+**Checkpoint**: SC-004 holds: a frame is obtained and the device state before and after is identical.
+
+### Deviations recorded during Front 4
+
+- **D-16 (T049)**: the read-only test does not assert "GET-only, no body". Two of the four
+  classes of D9 must send a body: the Selea read is a form POST, and the ONVIF read is a SOAP
+  POST, both because R5's sources only publish those shapes. What the test asserts instead is
+  stronger and still read-only: the transport records every request, and the set of
+  (method, path) pairs equals the five declared reads and nothing else, with the methods
+  drawn from an enum that holds no write verb. `docs/front-4-report.md` section 2.
+- **D-17 (T049)**: the new test found that `HttpReadTransport` never worked. `_read` opened the
+  connection with `with self._connection(parts) as connection:`, and `http.client.HTTPConnection`
+  has no `__enter__`, so every real read raised `TypeError` before a byte left the process. The
+  loopback tests in `tests/test_cve_read_only.py` failed with
+  `TypeError: 'HTTPConnection' object does not support the context manager protocol`, which is
+  the failing test D24 asks for. The connection is now closed in a `finally`, so a read that
+  times out still closes its socket. `docs/front-4-report.md` section 3.
+- **D-18 (T057)**: the timeout is one number on the transport, not one per step.
+  `vuln.timeout_seconds` (8.0, the RTSP probe's `stimeout`) bounds the connect and the read of
+  every request of every class, because `http.client` applies the timeout to the socket rather
+  than to a phase. A device that accepts the connection and never answers is the case
+  `tests/test_cve_timeout.py` measures.
+- **D-19 (T059)**: the lab run found that the identity chain reached no CVE at all. A camera is
+  looked up by the `vendor` and `product` pair of `brands.yaml`, and every camera brand in that
+  file carries `product: ip_camera`, a name the NVD dictionary does not hold: the dictionary
+  answers `totalResults 0` for `cpe:2.3:h:hikvision:ip_camera` and 1 for
+  `cpe:2.3:h:hikvision:ds-2cd2032-i`. A camera CVE names a model, and its vulnerable range sits
+  on the model firmware CPE, part `o`, while the hardware CPE of that same model is flagged not
+  vulnerable: of the 116 cpeMatch entries of CVE-2017-7921, 58 are vulnerable and all 58 are on
+  a `hikvision:<model>_firmware` product. Two changes, both in this front: the probe retries a
+  pair as `<product>_firmware` once, and only when the pair itself found nothing, and
+  `brands.yaml` gained a model-level entry, which is the level a CVE can be reached from. Every
+  other brand pair still matches no CVE, and closing that is a model list per brand checked
+  against the NVD dictionary: data work, not code. `docs/front-4-report.md` section 4.
+- **D-20 (T059)**: two of the four classes of the batch can never be selected while the feed
+  carries no CPE for their CVE. `CVE-2016-15055` (JVC) and `CVE-2025-34022` (Selea) carry no
+  `configurations` in NVD, so `NvdRecordParser.parse` returns None and the record is dropped
+  before any device can be compared with it. They stay in the batch, because a feed that
+  carries a CPE for them selects them the same way as the other two.
+- **D-21 (T059)**: the suite was green while the front could not match anything, because the
+  feed in `tests/test_version_range.py` was written by hand with the product
+  `cpe:2.3:o:hikvision:ip_camera`, a name the NVD dictionary does not carry. The test agreed
+  with the code and not with the feed. The file now also carries the record shape a real camera
+  CVE has, and `samples/nvd_camera_sample.json` is the four real records of the batch, fetched
+  from the NVD API on 2026-11-11.
+
+---
+
+## Phase 7: User Story 4 - Faces grouped into people, and the monitoring answer (Priority: P4)
+
+**Goal**: fix the metric to cosine over the 512-d normed embedding, cluster faces into people
+with the merge rule, and answer who appeared where and when.
+
+**Independent Test**: a face seen twice is one person; a face matching two people merges them; `search` prints one line per appearance.
+
+### Tests for User Story 4
+
+- [x] T060 [P] [US4] Test that matching uses cosine similarity over the normalized vector and rejects the Euclidean comparison, in `tests/test_face_metric.py`
+- [x] T061 [P] [US4] Test that a new face creates a person and a repeat does not, in `tests/test_person_cluster.py`
+- [x] T062 [P] [US4] Test the merge: a face matching two people leaves one person and re-points every face, in `tests/test_person_merge.py`
+- [x] T063 [P] [US4] Test the output shape of `report faces` and `search`, in `tests/test_report_output.py`
+- [x] T064 [P] [US4] Test that a person with no label prints as an id and never as a name, and that a label set on the row prints beside it, in `tests/test_person_anonymous.py`
+
+### Implementation for User Story 4
+
+- [x] T065 [US4] Fix the dimension and the metric in `scanners/face_recognizer.py`: 512-d, `normed_embedding`, cosine similarity (D44)
+- [x] T066 [US4] Define `face.match_threshold` as a minimum cosine similarity and mark the current value a placeholder in `scanners/config.py` and `config.yaml.example` (D45)
+- [x] T067 [US4] Implement the person entity, its repository and the merge in `models/person.py` and `models/managers.py`
+- [x] T068 [US4] Cluster detected faces into people in `scanners/face_task.py`, with the `ponytail:` ceiling comment naming the pgvector upgrade path (R9)
+- [x] T069 [US4] Store the frame as a file and its path in the database in `scanners/face_task.py` and `scanners/frames.py`
+- [x] T070 [US4] Register `scan faces`, `report faces` and `search` in `main.py`
+- [x] T071 [US4] Implement the monitoring query in `models/managers.py`, using the indexes of data-model.md and no SQL built from strings
+- [x] T072 [US4] Implement `measure threshold` over the labelled pair set in `scanners/face_recognizer.py` and register it in `main.py` (D16)
+- [x] T080 [P] [US4] Test the measurement: same identity pairs score above different identity pairs on a fixed set of embeddings, and an identity directory with one image exits 1, in `tests/test_threshold_measure.py`
+- [x] T073 [US4] Lab run: the same face in two frames yields one person, and the `search` output is pasted into the front report
+
+**Checkpoint**: SC-005 and SC-006 hold against the lab.
+
+### Deviations recorded during Front 5
+
+- **D-22 (T070)**: `scan faces` writes one `scan_run` of kind `faces` as well, which the
+  `writes` line of `contracts/cli.md` does not list. The run has to be recorded like every
+  other run, and `ScanKind` already had a `faces` member, so the contract line is the
+  incomplete one and not the code. `docs/front-5-report.md` section 9.
+- **D-23 (T070)**: `main.py` now carries the list of refusals it converts into exit 1
+  (`_REFUSALS`). `contracts/cli.md` fixes the three codes and names four cases; which
+  exceptions count as a refusal is an implementation choice, and it now lives in one place
+  instead of at each command. Anything outside the list keeps its traceback, because that is
+  a bug and not a value the operator can fix.
+- **D-24 (T073)**: `lab/mock_camera.py` gained `--image`, defaulting to the synthetic frame
+  it served before. The synthetic frame is flat grey and holds no face, so without a way to
+  serve a real photo the face path could not be run against the lab at all. The device is
+  still the mock of `docs/front-4-rig.md`, and the new option changes nothing about what it
+  proves.
+- **D-25 (T073)**: the labelled pair set lives under `logs/faces`, not under the `lab/faces`
+  of `quickstart.md` step 7. `lab/` is committed, and the set is photos of real people: two
+  public sample images, one cropped out of the group photo that ships with insightface and
+  one from the scikit image samples. `logs/` is git-ignored, so the set stays on the machine
+  that measured with it.
+- **D-26 (T066)**: three config keys were read by nothing and are deleted from
+  `scanners/config.py` and `config.yaml.example`: `min_faces_per_frame`,
+  `max_faces_per_camera` and `save_frames`. The second one also contradicted the unlimited
+  retention of D10, so keeping it would have been a rule the code does not follow.
+- **D-27 (T065)**: the `insightface` line of `pyproject.toml` said 128-d. The model emits 512
+  values, which is the dimension D44 fixes the metric on.
+- **D-28 (T060, T080)**: the frame file name gains a counter suffix when the plain name is
+  already on disk, and `scan faces` stores each frame as it is captured instead of collecting
+  all of them first. The lab proved the second resolution of the R8 name cannot hold two
+  frames of one second: the run died on `UNIQUE (path)` with one frame on disk and one open
+  `scan_run`, and every `captured_at` of a run carried the instant of the store instead of the
+  instant of the capture. The plain name stays the first name of a second, so the R8 layout
+  holds for the ordinary case. `docs/front-5-report.md` section 7.
+- **D-29 (T080)**: `lab/mediamtx.yml` added. `quickstart.md` step 4 started `mediamtx` with no
+  configuration file, and mediamtx then serves only the paths that were declared, which the
+  path of a camera URL never is.
+- **D-30 (T080)**: `quickstart.md` step 4 publishes a still image on a loop instead of the
+  `lab/face.mp4` it named, which the repository does not ship.
+- **D-31 (T063, T064)**: both reports print a person as `person <id> (<label>)` when the row
+  carries a label, and `contracts/cli.md` printed only `person <id>`. The label is data the
+  row holds, so a report that dropped it would print less than it read, and the column width
+  follows the widest cell it is about to print. Nothing in this batch writes `person.label`,
+  so the unlabelled form is still what the pipeline itself produces; the labelled run is in
+  `docs/front-5-report.md` section 5.
+
+---
+
+## Phase 8: Polish & Cross-Cutting Concerns
+
+**Purpose**: the documentation and the gates that cover every front.
+
+- [x] T074 [P] Rewrite `README.md` for the subcommands of `contracts/cli.md`, removing the proxy section (D34, D38)
+- [x] T075 [P] Update `.specify/memory/constitution.md` and `docs/decisions/` if any front contradicted a recorded decision
+- [x] T076 Run the whole gate: `uv run pytest -q`, `uv run ruff check .`, and the quickstart end to end, with the raw output pasted
+- [x] T077 Confirm every front report carries a raw lab output, and that any unmeasured value is still labelled a placeholder (SC-009, SC-010)
+
+T075: nothing to update. No front contradicted a decision. D-28 extends R8 of `research.md`,
+which is a finding and not a decision, and the frame-name layout is fixed by no decision
+(`D17` fixes only that the path lives in the database). `docs/decisions/` stands as written.
+
+T076: `141 passed in 8.96s` and `All checks passed!` on 2026-11-11, in the repository, with
+`.venv/bin/python -m pytest -q` and `.venv/bin/ruff check .`. The quickstart was not run end
+to end on this machine, and the reason is recorded in `docs/front-5-report.md` section 8: the
+lab database carries the 229 rows revision `0002` copied out of the legacy `cam` table, so
+every wide command is refused by the gate. Each step was run narrowed to a named camera
+instead, and the raw output of each is in the front report of the front that built it.
+
+T077: every front report carries raw lab output (`docs/front-1-report.md` to
+`docs/front-5-report.md`), and the one unmeasured value left in the code, `face.match_threshold`,
+is labelled a placeholder in `scanners/config.py`, in `config.yaml.example` and in section 3 of
+the Front 5 report (SC-010).
+
+---
+
+## Dependencies & Execution Order
+
+### Phase Dependencies
+
+- **Setup (Phase 1)**: no dependencies
+- **Foundational (Phase 2)**: depends on Setup. T006 blocks US1 and US4, T007 blocks US4, T008 blocks US3. T008 and T009 can run in parallel with Phase 3 and Phase 4
+- **US1 (Phase 3)**: depends on Setup and T006
+- **US5 (Phase 4)**: depends on US1, because the cleanup removes tests that reference the new repositories. Runs before US2, US3 and US4 so they touch a smaller tree (D12)
+- **US2 (Phase 5)**: depends on US1 and US5
+- **US3 (Phase 6)**: depends on US2, which supplies the identification the match needs, and on T008
+- **US4 (Phase 7)**: depends on US3, which supplies the frames, and on T006 and T007
+- **Polish (Phase 8)**: depends on every front
+
+### Within Each Phase
+
+- Tests first, and they must fail before the implementation lands (constitution principle II)
+- Models before repositories, repositories before services, services before the CLI command
+- Each front ends with its lab run and its pasted raw output (D24)
+
+### Parallel Opportunities
+
+- Phase 1: T002, T003 and T004 touch different files
+- Phase 3: T010 to T013 are four test files; T015 and T016 are separate entity files
+- Phase 5: T036 to T039 are four test files
+- Phase 6: T052, T053 and T054 are three separate CVE modules
+- Phase 7: T060 to T064 are five test files
+- The firmware emulation (T008) is the long pole and can be started on day one
+
+---
+
+## Parallel Example: User Story 3
+
+```bash
+# The three CVE class modules touch different files and can be written together:
+Task: "Implement the authentication bypass module for CVE-2017-7921 in scanners/cve/auth_bypass.py"
+Task: "Implement the unauthenticated read module for CVE-2025-34022 and CVE-2016-15055 in scanners/cve/unauth_read.py"
+Task: "Implement the unauthenticated ONVIF module in scanners/cve/unauth_onvif.py"
+```
+
+---
+
+## Implementation Strategy
+
+### MVP first
+
+Phase 1, Phase 2 (T006 only), Phase 3. That delivers a database that remembers history and a
+scan that fills it, which is user story 1 and the foundation every other front writes to.
+Stop and validate with the quickstart before continuing.
+
+### Incremental delivery
+
+One front per branch and per reviewed PR (D32), in this order: US1, US5, US2, US3, US4, then
+Polish. Each front is independently testable and leaves the tree passing its own gates.
+
+### What is not in this list
+
+The mock fallback for the lab (only if T008 fails), any purge of stored frames or embeddings
+(contradicts D10), any automatic labelling of a person (contradicts D28), and the deploy,
+scheduling, metrics and alerting work that D2 put out of scope.
+
+---
+
+## Notes
+
+- [P] means different files and no dependency on an incomplete task
+- A front is not done until its test fails when the logic breaks and its lab output is pasted
+- A number that has not been measured is labelled a placeholder, in the config and in the docs
+- The gates are `uv run pytest -q` and `uv run ruff check .`, run by hand before every commit (D20)

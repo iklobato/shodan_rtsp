@@ -1,0 +1,254 @@
+# Camera brands, as data. Adding a brand is a line here, never a release.
+#
+# `match` is a list of regular expressions tried in order against the evidence
+# text a scan collected (the Shodan banner, or the nmap service product string).
+# The first brand whose patterns hit wins, so keep a specific pattern above a
+# loose one.
+#
+# `vendor` and `product` are what the camera is stored as, and the pair is what
+# selects the CVEs in the vuln mode (`cpe:2.3:<part>:<vendor>:<product>:...`).
+# Correct a wrong pair here rather than in code.
+#
+# No camera brand has a product NVD knows: a camera CVE names the model, and its
+# vulnerable range sits on the model's firmware CPE (`<model>_firmware`, part
+# `o`), while the hardware CPE of the same model is flagged not vulnerable.
+# The probe retries a pair as `<product>_firmware` for that reason. So a brand
+# entry names the brand and is what the check mode uses, and a model entry names
+# one model and is what reaches a CVE. Check a pair before adding it, or the
+# CVEs you find belong to a different product:
+#
+#   curl -sG 'https://services.nvd.nist.gov/rest/json/cpes/2.0' \
+#     --data-urlencode 'cpeMatchString=cpe:2.3:o:<vendor>:<model>_firmware' \
+#     --data-urlencode 'resultsPerPage=1'
+#
+# Measured 2026-11-11: `hikvision:ip_camera` returns totalResults 0, so the
+# brand-level camera pairs below match no CVE at all and are kept for the
+# credential set only.
+#
+# `users`, `passwords` and `url_templates` are the brand credential set the
+# check mode tries before the generic wordlists (D22). A brand with none of the
+# three still gets identified; only the generic wordlists run for it.
+
+brands:
+  # The model a device reports, and the entry that reaches CVE-2017-7921. The
+  # credential set is repeated from the brand entry below because the entry that
+  # matched is the one the check mode reads the set from.
+  hikvision_ds_2cd2032:
+    match: ["DS-2CD2032"]
+    vendor: hikvision
+    product: ds-2cd2032-i
+    users: [admin]
+    passwords:
+      - admin
+      - "12345"
+      - "123456"
+      - "12345678"
+      - Password123
+      - Hik12345
+      - abc123
+      - 1q2w3e4r
+    url_templates:
+      - "rtsp://{0}:{1}@{2}:{3}/h264/ch1/main/av_stream"
+      - "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101"
+
+  hikvision:
+    match: ["Hikvision-IP", "Hikvision", "IpCamera$"]
+    vendor: hikvision
+    product: ip_camera
+    users: [admin]
+    passwords:
+      - admin
+      - "12345"
+      - "123456"
+      - "12345678"
+      - Password123
+      - Hik12345
+      - abc123
+      - 1q2w3e4r
+    url_templates:
+      - "rtsp://{0}:{1}@{2}:{3}/h264/ch1/main/av_stream"
+      - "rtsp://{0}:{1}@{2}:{3}/h264/ch2/sub/av_stream"
+      - "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101"
+      - "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/102"
+
+  dahua:
+    match: ["Dahua", "DMSS"]
+    vendor: dahua
+    product: ip_camera
+    users: [admin]
+    passwords:
+      - admin
+      - "12345"
+      - "888888"
+      - "123456"
+      - "111111"
+      - admin12345
+      - Password123
+    url_templates:
+      - "rtsp://{0}:{1}@{2}:{3}/live/supStream"
+      - "rtsp://{0}:{1}@{2}:{3}/live/subStream"
+      - "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101"
+      - "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/102"
+      - "rtsp://{0}:{1}@{2}:{3}/cam/realmonitor?channel=1&subtype=1"
+      - "rtsp://{0}:{1}@{2}:{3}/cam/realmonitor?channel=1&subtype=0"
+
+  amcrest:
+    match: ["AMCre"]
+    vendor: amcrest
+    product: ip_camera
+    users: [admin]
+    passwords: [admin, amcrest, "12345", "123456", "666666", "888888"]
+    url_templates:
+      - "rtsp://{0}:{1}@{2}:{3}/cam/realmonitor?channel=1&subtype=0"
+      - "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101"
+      - "rtsp://{0}:{1}@{2}:{3}/video1"
+
+  reolink:
+    match: ["Reolink"]
+    vendor: reolink
+    product: ip_camera
+    users: [admin]
+    passwords: [admin, "123456", "12345", password, ""]
+    url_templates:
+      - "rtsp://{0}:{1}@{2}:{3}/h264/ch1/main/av_stream"
+      - "rtsp://{0}:{1}@{2}:{3}/h264/ch1/sub/av_stream"
+      - "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101"
+
+  axis:
+    match: ["Axis"]
+    vendor: axis
+    product: ip_camera
+    users: [root, admin]
+    passwords: [pass, admin, "12345", password]
+    url_templates:
+      - "rtsp://{0}:{1}@{2}:{3}/axis-media/media.amp"
+      - "rtsp://{0}:{1}@{2}:{3}/axis-cgi/mjpegb/stream"
+      - "rtsp://{0}:{1}@{2}:{3}/mjpg/mjpg.cgi"
+
+  samsung:
+    match: ["SAMSUNG", "Samsung"]
+    vendor: samsung
+    product: ip_camera
+    users: [admin]
+    passwords: [admin, "4321", "1234", "111111", "888888", "666666"]
+    url_templates:
+      - "rtsp://{0}:{1}@{2}:{3}/mpeg4/media.amp"
+      - "rtsp://{0}:{1}@{2}:{3}/multiMediaOutput/ch1"
+      - "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101"
+
+  panasonic:
+    match: ["Panasonic", "PANASONIC"]
+    vendor: panasonic
+    product: ip_camera
+    users: [admin]
+    passwords: [admin, "12345", "1234", password, root]
+    url_templates:
+      - "rtsp://{0}:{1}@{2}:{3}/video1"
+      - "rtsp://{0}:{1}@{2}:{3}/video2"
+
+  bosch:
+    match: ["Bosch"]
+    vendor: bosch
+    product: ip_camera
+    users: [admin, root]
+    passwords: [admin, bosch, secret, password, "123456"]
+    url_templates:
+      - "rtsp://{0}:{1}@{2}:{3}/video1"
+      - "rtsp://{0}:{1}@{2}:{3}/axis-media/media.amp"
+
+  # Identified, no credential set known: the generic wordlists cover these.
+  tplink:
+    match: ["TP-Link"]
+    vendor: tplink
+    product: ip_camera
+
+  hilook:
+    match: ["HiLook"]
+    vendor: hilook
+    product: ip_camera
+
+  longse:
+    match: ["Longse"]
+    vendor: longse
+    product: ip_camera
+
+  xmeye:
+    match: ["XMEYE", "XMeye"]
+    vendor: xmeye
+    product: ip_camera
+
+  ezviz:
+    match: ["Ezviz"]
+    vendor: ezviz
+    product: ip_camera
+
+  sony:
+    match: ["Sony"]
+    vendor: sony
+    product: ip_camera
+
+  fujitsu:
+    match: ["Fujitsu"]
+    vendor: fujitsu
+    product: ip_camera
+
+  honeywell:
+    match: ["Honeywell"]
+    vendor: honeywell
+    product: ip_camera
+
+  hanwha:
+    match: ["Hanwha"]
+    vendor: hanwha
+    product: ip_camera
+
+  lg:
+    match: ["LG-IPC"]
+    vendor: lg
+    product: ip_camera
+
+  pelco:
+    match: ["Pelco"]
+    vendor: pelco
+    product: ip_camera
+
+  canon:
+    match: ["Canon"]
+    vendor: canon
+    product: ip_camera
+
+  jvc:
+    match: ["JVC"]
+    vendor: jvc
+    product: ip_camera
+
+  mitsubishi:
+    match: ["Mitsubishi"]
+    vendor: mitsubishi
+    product: ip_camera
+
+  nec:
+    match: ["NEC"]
+    vendor: nec
+    product: ip_camera
+
+  sanyo:
+    match: ["Sanyo"]
+    vendor: sanyo
+    product: ip_camera
+
+  # The two web servers cheap cameras embed instead of writing their own. They
+  # are not brands, but naming them is what points the vuln mode at the CVEs
+  # that cover the server, which is where an unauthenticated read usually sits.
+  # Both pairs were checked against the NVD CPE dictionary (cpe_map.yaml has the
+  # command); `xiongmaitech` has no generic product, only per-model hardware, so
+  # a DVR banner like H264DVR is left unnamed on purpose.
+  boa:
+    match: ["Boa/"]
+    vendor: boa
+    product: boa
+
+  goahead:
+    match: ["GoAhead"]
+    vendor: embedthis
+    product: goahead

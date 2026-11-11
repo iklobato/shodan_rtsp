@@ -2,55 +2,69 @@
 
 shodan:
   api_key: "<your_shodan_api_key>"
-  query: "screenshot.label:webcam,cam country:BR"
+  # A query runs only when it names the range it may reach (`net:`) and that
+  # range is declared under `targets` (D18, FR-001). Without both, the scan is
+  # refused before any API call: Shodan cannot be asked whether a result set
+  # stays inside a range, so a query with no `net:` filter reaches the whole
+  # index.
+  query: "net:203.0.113.0/24 screenshot.label:webcam,cam"
+
+targets:
+  # The one list of what this scanner may reach (D18, FR-001). It guards the
+  # Shodan query and every command that reaches a stored camera, so the
+  # authorization is written once. Empty authorizes nothing: a check run over
+  # cameras already in the database is refused until its addresses are here.
+  # A run narrowed with `scan check --camera-id N` reaches the camera the
+  # operator named, which is the authorization itself.
+  allowed_cidrs: ["203.0.113.0/24"]  # your lab, or a range you may scan in writing
 
 checkers:
   wordlist_users: wordlists/users_small.txt
   wordlist_passwords: wordlists/passwords_small.txt
   wordlist_rtsp_urls: wordlists/rtsp_urls_small.txt
   randomize: true
-  concurrency: 1              # parallel RTSP probes; raise to speed up, bounded by the proxy exit
+  concurrency: 1              # parallel RTSP probes; raise to speed up, bounded by the cameras
 
 nmap:
-  ip_range: 200.128.0.0/24
+  ip_range: 192.168.1.0/24    # your own lab or a written-authorized range
+  # RTSP plus the web and ONVIF ports most cameras expose instead of it (D15)
+  ports: [554, 80, 443, 8000, 8080, 8554, 34567]
   parallelism: 0             # > 0 runs nmap with -T4 --min-parallelism N; 0 = nmap defaults
-  xml_path: logs/nmap.xml    # raw XML of the run; this is what --start_vuln_scan reads
-
-proxy:
-  # false = connect straight from the local IP. Required for a private range
-  # (192.168.x.x is unreachable through a residential exit) and for a local
-  # scan while the 2captcha account is down. Keep true for public scans.
-  enabled: true
-  token: "<your_2captcha_token>"
-  auth_mode: whitelist        # whitelist | login
-  protocol: socks5            # http | https | socks5
-  country: us
-  public_ip: ""               # whitelist mode; auto-detected when empty
-  gateway_host: ""            # login mode only
-  gateway_port: 0             # login mode only
-  gateway_password: ""        # login mode only
+  xml_path: logs/nmap.xml    # raw XML of the run, kept as the record of what nmap saw
 
 vuln:
-  # Names the CVEs that cover what an nmap or Shodan scan already collected.
-  # It never sends a payload or contacts a device.
-  nmap_xml: logs/nmap.xml     # the XML --start_nmap writes (nmap.xml_path)
+  # Names the CVEs that cover what a scan already stored, then reads each match
+  # once through the read-only classes of the batch. Nothing is written to a
+  # device and no payload is sent (D9, D30).
   feed_path: nvdcve-2.0.json  # NVD 2.0 JSON; see the README for how to build a subset
   cpe_map_path: cpe_map.yaml  # product string -> CPE vendor:product
   min_cvss: 0.0               # drop findings below this base score
-  report_path: logs/vuln_report.json
+  web_ports: [80, 443, 8000, 8080]  # tried after the port the camera was seen on
+  timeout_seconds: 8.0        # one network step; the RTSP probe uses the same bound
 
 face:
   enabled: true               # set false to skip face scan
   frames_per_scan: 5          # frames per camera per scan
   frame_interval: 2.0         # seconds between frames
-  match_threshold: 0.5        # cosine distance below = same person
-  save_frames: true           # save face frames to DB
+  # Cosine similarity over the L2-normalized 512-d embedding: higher means more
+  # alike, 1.0 is the same direction. PLACEHOLDER until `measure threshold` runs
+  # over a labelled pair set (D16, D44, SC-010).
+  match_threshold: 0.5
+  pairs_path: lab/faces       # labelled pair set `measure threshold` reads by default
+
+frames:
+  # Frames are files on disk and the database holds the path (D17). The layout
+  # under this root is <root>/<camera_id>/<timestamp>-<source>.jpg (R8).
+  root_path: logs/frames
+
+brands:
+  # Brand signatures and the brand credential sets, as data (D27)
+  signature_path: brands.yaml
 
 database:
   # dockerized postgres, e.g.:
-  #   docker run -d --name shodan_pg -e POSTGRES_USER=scanner \
-  #     -e POSTGRES_PASSWORD=scanner -e POSTGRES_DB=cameras -p 5433:5432 postgres:16
+  #   docker compose up -d postgres
   user: "<postgres_user>"
   password: "<postgres_password>"
-  host: "localhost:5433"   # host[:port]; 5433 avoids clashing with a local 5432
+  host: "localhost:5440"   # host[:port]; 5432 and 5433 are taken on this host
   db: "cameras"
