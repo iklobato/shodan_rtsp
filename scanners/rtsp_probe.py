@@ -16,8 +16,9 @@ from dataclasses import dataclass
 from typing import Iterator, Protocol
 
 import cv2
+import numpy as np
 
-from models.camera import Camera
+from models.camera import Camera, CameraStatus
 from scanners.proxy import TwoCaptchaProxy
 from scanners.proxy_tunnel import ProxyTunnel
 
@@ -39,6 +40,18 @@ class RtspTarget:
     @property
     def url(self) -> str:
         return self.url_template.format(self.user, self.password, self.host, self.port)
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    """What a probe that answered produced: the camera and one frame.
+
+    The frame used to travel in a `Camera` column as hex text; the schema keeps
+    frames as files now (D17), so it travels as the decoded array instead.
+    """
+
+    camera: Camera
+    frame: np.ndarray
 
 
 def _rewrite_netloc(url: str, host: str, port: int) -> str:
@@ -132,11 +145,11 @@ class RtspProbe:
     def __init__(self, transport: Transport = None, proxy: TwoCaptchaProxy = None):
         self._transport = transport or self._default_transport(proxy)
 
-    def probe(self, target: RtspTarget):
+    def probe(self, target: RtspTarget) -> ProbeResult | None:
         with self._transport.open(target) as url:
             return self._grab(url, target)
 
-    def _grab(self, url: str, target: RtspTarget):
+    def _grab(self, url: str, target: RtspTarget) -> ProbeResult | None:
         logging.debug(url)
         with _opened_capture(url) as capture:
             ok, frame = capture.read()
@@ -146,21 +159,17 @@ class RtspProbe:
         logging.info(
             "[!] %s, user: %s, password: %s", target.url, target.user, target.password
         )
-        return self._to_camera(target, frame)
+        return ProbeResult(camera=self._to_camera(target), frame=frame)
 
     @staticmethod
-    def _to_camera(target: RtspTarget, frame) -> Camera:
-        # The column is a String and the face scan decodes it with fromhex, so
-        # the frame travels as hex text, not as raw JPEG bytes.
-        image_b64 = cv2.imencode(".jpg", frame)[1].tobytes().hex()
+    def _to_camera(target: RtspTarget) -> Camera:
         return Camera(
             ip=target.host,
             port=target.port,
             user=target.user,
             password=target.password,
             url=target.url,
-            active=True,
-            image_b64=image_b64,
+            status=CameraStatus.stream_obtained,
         )
 
     @staticmethod

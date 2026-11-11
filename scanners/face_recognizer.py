@@ -48,7 +48,7 @@ class KnownEmbedding:
 
     face_id: int
     camera_id: int
-    embed_str: str
+    embedding: list[float]
 
 
 class FaceRecognizer:
@@ -94,14 +94,14 @@ class FaceRecognizer:
         new_vec: np.ndarray,
         known: KnownEmbedding,
     ) -> FaceMatch | None:
-        known_vec = self._parse_embedding(known.embed_str)
+        known_vec = np.array(known.embedding, dtype=np.float32).reshape(1, -1)
         dist = float(np.linalg.norm(new_vec - known_vec))
         if dist < self.settings.match_threshold:
             return FaceMatch(
                 existing_face_id=known.face_id,
                 camera_id=known.camera_id,
                 distance=dist,
-                confidence=self._short_embed(known.embed_str),
+                confidence=self._short_embed(self._embedding_to_str(known_vec)),
             )
         return None
 
@@ -135,10 +135,6 @@ class FaceRecognizer:
 
     def _short_embed(self, embed_str: str) -> str:
         return embed_str[:_CONFIDENCE_DISPLAY_CHARS] + "..."
-
-    def _parse_embedding(self, embed_str: str) -> np.ndarray:
-        value_parts = [float(part_str) for part_str in embed_str.split(",")]
-        return np.array(value_parts, dtype=np.float32).reshape(1, -1)
 
     def embedding_to_str(self, embedding: np.ndarray) -> str:
         return self._embedding_to_str(embedding)
