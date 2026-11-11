@@ -1,11 +1,16 @@
 name: ci
 
-# The suite runs on an in-memory SQLite database with injected fakes, so it
-# needs no Postgres, no camera and no network: one runner and one command.
+# The unit suite runs on an in-memory SQLite database with injected fakes, so it
+# needs no Postgres, no camera and no network. The migration suite is the one
+# exception: sqlite cannot stand in for PostgreSQL-only DDL, so this job starts
+# a throwaway Postgres and writes the config.yaml that names it. That config
+# holds placeholder values only, and it is never committed.
 on:
   push:
     branches: [main]
   pull_request:
+  # So publish.yml runs this same job instead of a copy of it.
+  workflow_call:
 
 permissions:
   contents: read
@@ -14,11 +19,39 @@ jobs:
   checks:
     name: lint and tests
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: scanner
+          POSTGRES_PASSWORD: scanner
+          POSTGRES_DB: postgres
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U scanner"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      # The one value that differs between the lab host (localhost:5440, D40)
+      # and this job. The rest of the database section comes from the example.
+      DATABASE_HOST: localhost:5432
     steps:
       - uses: actions/checkout@v7
+
       # The exact version: setup-uv publishes no floating v10 tag, so `@v10`
       # fails the run at the resolve step.
       - uses: astral-sh/setup-uv@v10.3.3
       - run: uv sync --frozen
+
+      # The migration tests read the database through the config, so the job
+      # writes one from the example with throwaway credentials.
+      - name: A throwaway config, so the migration tests run for real
+        run: |
+          sed -e 's|"<postgres_user>"|scanner|' \
+              -e 's|"<postgres_password>"|scanner|' \
+              config.yaml.example > config.yaml
+
       - run: uv run ruff check .
       - run: uv run pytest -q

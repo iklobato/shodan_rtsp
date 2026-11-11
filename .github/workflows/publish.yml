@@ -14,20 +14,17 @@ env:
   IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/shodan-rtsp
 
 jobs:
+  # The suite of ci.yml, not a copy of it: a tag whose tests fail must not
+  # reach the registry.
+  checks:
+    uses: ./.github/workflows/ci.yml
+
   publish:
-    name: build, test and push
+    name: build, smoke test and push
     runs-on: ubuntu-24.04
+    needs: checks
     steps:
       - uses: actions/checkout@v7
-
-      # The suite runs here too, not only in ci.yml: a tag whose tests fail must
-      # not reach the registry.
-      # The exact version: setup-uv publishes no floating v10 tag, so `@v10`
-      # fails the run at the resolve step.
-      - uses: astral-sh/setup-uv@v10.3.3
-      - run: uv sync --frozen
-      - run: uv run ruff check .
-      - run: uv run pytest -q
 
       # The version line of [project], not `uv version --short`, whose output
       # carries colour codes when uv thinks it has a terminal.
