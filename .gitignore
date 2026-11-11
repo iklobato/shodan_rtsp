@@ -1,3 +1,9 @@
 proxylist.txt
 .env
 config.yaml
+
+# The spec-kit artifacts are the review surface for this project (decision D41 in
+# docs/decisions/2026-11-11-shodan-rtsp-prod-ready.md). The global ignore file at
+# ~/.gitignore drops .specify/ and specs/, so re-include both here.
+!.specify/
+!specs/
