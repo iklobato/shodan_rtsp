@@ -1,0 +1,22 @@
+name: ci
+
+# The suite runs on an in-memory SQLite database with injected fakes, so it
+# needs no Postgres, no camera and no network: one runner and one command.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: lint and tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run pytest -q
