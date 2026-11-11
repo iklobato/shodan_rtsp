@@ -124,6 +124,18 @@ class CpeMatchRange:
             return not self._has_bounds()
         return self._within_bounds(device.version)
 
+    def describe(self) -> str:
+        """The range as the NVD record wrote it, for the finding to carry."""
+        if self.version:
+            return self.version
+        bounds = (
+            (self.start_including, ">="),
+            (self.start_excluding, ">"),
+            (self.end_including, "<="),
+            (self.end_excluding, "<"),
+        )
+        return ", ".join(f"{operator}{bound}" for bound, operator in bounds if bound)
+
     def _has_bounds(self) -> bool:
         return any(
             (
@@ -163,7 +175,11 @@ class CveEntry:
     ranges: tuple[CpeMatchRange, ...]
 
     def covers(self, device: CpeName) -> bool:
-        return any(match.covers(device) for match in self.ranges)
+        return self.covering_range(device) is not None
+
+    def covering_range(self, device: CpeName) -> CpeMatchRange | None:
+        """The first range of this record that covers the device, if any."""
+        return next((match for match in self.ranges if match.covers(device)), None)
 
 
 @dataclass(frozen=True)
@@ -175,6 +191,7 @@ class CveMatch:
     summary: str
     host: str
     port: int
+    matched_range: str = ""
 
 
 @dataclass(frozen=True)
@@ -183,6 +200,7 @@ class DeviceFingerprint:
 
     host: str
     port: int
+    vendor: str = ""
     product: str = ""
     version: str = ""
     cpe: str = ""
@@ -346,7 +364,7 @@ class VulnProbe:
         if identified is None:
             return []
         return [
-            self._to_match(entry, device)
+            self._to_match(entry, device, identified)
             for entry in self._feed.entries_for(identified)
             if entry.cvss >= self._min_cvss and entry.covers(identified)
         ]
@@ -359,6 +377,18 @@ class VulnProbe:
         """
         if device.cpe.startswith(_CPE_PREFIX):
             return CpeName.parse(device.cpe)
+        return self._named_pair(device) or self._mapped_pair(device)
+
+    def _named_pair(self, device: DeviceFingerprint) -> CpeName | None:
+        """The pair brands.yaml already read off the device, if it named one."""
+        if not (device.vendor and device.product):
+            return None
+        return CpeName(
+            vendor=device.vendor, product=device.product, version=device.version
+        )
+
+    def _mapped_pair(self, device: DeviceFingerprint) -> CpeName | None:
+        """The pair the product -> CPE map gives for the scanned product string."""
         mapped = self._cpe_map.resolve(device.product)
         if mapped is None:
             return None
@@ -366,11 +396,15 @@ class VulnProbe:
             vendor=mapped.vendor, product=mapped.product, version=device.version
         )
 
-    def _to_match(self, entry: CveEntry, device: DeviceFingerprint) -> CveMatch:
+    def _to_match(
+        self, entry: CveEntry, device: DeviceFingerprint, identified: CpeName
+    ) -> CveMatch:
+        covering = entry.covering_range(identified)
         return CveMatch(
             cve_id=entry.cve_id,
             cvss=entry.cvss,
             summary=entry.summary,
             host=device.host,
             port=device.port,
+            matched_range=covering.describe() if covering else "",
         )

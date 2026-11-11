@@ -44,6 +44,10 @@ cp config.yaml.example config.yaml
 Then, in `config.yaml`:
 
 - remove the whole `proxy:` section (D11)
+- set `targets.allowed_cidrs` to the range the scanner may reach, `["127.0.0.1/32"]` for
+  this lab. An empty list authorizes nothing, so a `scan check` over stored cameras is
+  refused until its addresses are here (D18, FR-001). A run narrowed with
+  `scan check --camera-id N` is not gated: naming the camera is the authorization.
 - set `nmap.ip_range` to the lab range
 - set `database.host` to `localhost:5440`
 - add `frames.root_path`, for example `logs/frames`

@@ -179,22 +179,45 @@ from `brands.yaml`, and attach the vulnerable version range from the CVE map.
 
 ### Tests for User Story 2
 
-- [ ] T036 [P] [US2] Test brand detection from a banner through `brands.yaml`, including a brand added only to the file, in `tests/test_brand_detection.py`
-- [ ] T037 [P] [US2] Test that an unmatched device is stored as unknown with its raw banner kept, in `tests/test_brand_unknown.py`
-- [ ] T038 [P] [US2] Test that a product in the CVE map attaches its version range to the camera, in `tests/test_version_range.py`
-- [ ] T039 [P] [US2] Test that a malformed `brands.yaml` fails at load with the offending line named, in `tests/test_brands_file.py`
+- [x] T036 [P] [US2] Test brand detection from a banner through `brands.yaml`, including a brand added only to the file, in `tests/test_brand_detection.py`
+- [x] T037 [P] [US2] Test that an unmatched device is stored as unknown with its raw banner kept, in `tests/test_brand_unknown.py`
+- [x] T038 [P] [US2] Test that a product in the CVE map attaches its version range to the camera, in `tests/test_version_range.py`
+- [x] T039 [P] [US2] Test that a malformed `brands.yaml` fails at load with the offending line named, in `tests/test_brands_file.py`
 
 ### Implementation for User Story 2
 
-- [ ] T040 [US2] Write `brands.yaml` with the brand entries of the data contract, starting with the brands the current code already knows
-- [ ] T041 [US2] Rewrite `scanners/brand_probe.py` to load `brands.yaml`, dropping the hardcoded pattern table and the duplicated `_generic_nginx`
-- [ ] T042 [US2] Store the raw banner fields on the camera instead of discarding them at `scanners/task.py:42`
-- [ ] T043 [US2] Write the interpreted vendor, product and version to the camera in `scanners/task.py`
-- [ ] T044 [US2] Try the brand credential set before the generic wordlists in the check task (D22)
-- [ ] T045 [US2] Register `scan check` in `main.py`
-- [ ] T046 [US2] Lab run: identify the lab camera and a device that matches no signature, with both raw outputs pasted into the front report
+- [x] T040 [US2] Write `brands.yaml` with the brand entries of the data contract, starting with the brands the current code already knows
+- [x] T041 [US2] Rewrite `scanners/brand_probe.py` to load `brands.yaml`, dropping the hardcoded pattern table and the duplicated `_generic_nginx`
+- [x] T042 [US2] Store the raw banner fields on the camera instead of discarding them at `scanners/task.py:42`
+- [x] T043 [US2] Write the interpreted vendor, product and version to the camera in `scanners/task.py`
+- [x] T044 [US2] Try the brand credential set before the generic wordlists in the check task (D22)
+- [x] T045 [US2] Register `scan check` in `main.py`
+- [x] T046 [US2] Lab run: identify the lab camera and a device that matches no signature, with both raw outputs pasted into the front report
 
 **Checkpoint**: acceptance scenarios 1 to 4 of US2 hold against the lab.
+
+### Deviations recorded during Front 3
+
+- **D-10 (T044)**: `shodan.allowed_cidrs` moved to a new top-level `targets.allowed_cidrs`,
+  as decided in the grill. One list now guards the Shodan query and every command that
+  reaches a stored camera, so the authorization is written once. `config.yaml.example` and
+  `quickstart.md` follow. The local `config.yaml` has no `targets:` section yet, so its
+  declared list is empty and every wide `scan check` is refused.
+- **D-11 (T044)**: `ShodanScope` is renamed `TargetGate` and gained `require_reachable`,
+  the check over the addresses already in the database. The old name said Shodan; the type
+  now guards two ways of reaching an address. `docs/front-1-report.md` keeps the old name
+  for the state it recorded.
+- **D-12 (T044)**: a run narrowed with `scan check --camera-id N` is not gated, as decided:
+  naming the camera is the authorization. The gate is what refuses the wide run.
+- **D-13 (T040)**: the four `generic_*` entries are not in `brands.yaml`. They duplicated
+  `wordlists/rtsp_urls_small.txt` and the password file; the generic set is still tried,
+  through the wordlists, after the brand set (D22).
+- **D-14 (T041)**: `NmapTask` takes an `identifier` second, so it has three parameters and
+  the immutable rules hold. `ShodanTask` and `CheckTask` take one frozen deps object for the
+  same reason.
+- **D-15 (T041)**: `ruff format` is not enforced in this repository. `ruff format --check .`
+  flags nine files, four of them untouched by any front. Only `ruff check` runs, through the
+  quality hook. Reformatting the repository is its own decision.
 
 ---
 

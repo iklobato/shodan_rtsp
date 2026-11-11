@@ -1,533 +1,304 @@
-"""Brand detection from Shodan banners and per-brand credential sets.
+"""Identify a camera from the evidence a scan collected, using brands.yaml.
 
-Shodan banners contain service headers (HTTP Server, device hostname, raw
-banner text) that reveal the camera manufacturer. This module maps those
-signals to credential sets (users, passwords, RTSP URL templates) so the
-checker tries brand-specific combos first instead of blind brute force.
+The signature data lives in the YAML file, not here, so supporting a brand the
+scanner has never seen is a line in that file and no release (D27). This module
+reads the file, matches the evidence against its patterns and hands back what it
+read, together with the credential set the check mode tries first (D22).
+
+Identification only: nothing here opens a connection. The evidence it consumes
+is what an nmap or Shodan scan already collected.
 """
 
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from scanners.config import CheckersConfig
+import yaml
 
-# Brand identifier patterns: each tuple is (raw_regex, brand_label).
-BRAND_PATTERN_SPECS: tuple[tuple[str, str], ...] = (
-    (r"Hikvision-IP", "hikvision"),
-    (r"Hikvision", "hikvision"),
-    (r"IpCamera$", "hikvision"),
-    (r"Dahua", "dahua"),
-    (r"DMSS", "dahua"),
-    (r"TP-Link", "tplink"),
-    (r"Reolink", "reolink"),
-    (r"HiLook", "hilook"),
-    (r"Longse", "longse"),
-    (r"XMEYE", "xmeye"),
-    (r"XMeye", "xmeye"),
-    (r"Ezviz", "ezviz"),
-    (r"AMCre", "amcrest"),
-    (r"SAMSUNG", "samsung"),
-    (r"Panasonic", "panasonic"),
-    (r"PANASONIC", "panasonic"),
-    (r"Axis", "axis"),
-    (r"Sony", "sony"),
-    (r"Bosch", "bosch"),
-    (r"Fujitsu", "fujitsu"),
-    (r"Honeywell", "honeywell"),
-    (r"Hanwha", "hanwha"),
-    (r"LG-IPC", "lg"),
-    (r"Pelco", "pelco"),
-    (r"Canon", "canon"),
-    (r"JVC", "jvc"),
-    (r"Mitsubishi", "mitsubishi"),
-    (r"NEC", "nec"),
-    (r"Sanyo", "sanyo"),
-    (r"Samsung", "samsung"),
-    (r"nginx", "generic_nginx"),
-    (r"lighttpd", "generic_lighttpd"),
-    (r"Apache", "generic_apache"),
-    (r"ONVIF", "generic_onvif"),
-)
+# cpe:2.3:<part>:<vendor>:<product>:<version>:... - offsets are the same for the
+# a (application), o (os) and h (hardware) parts, so only the prefix is checked.
+_CPE_PREFIX = "cpe:2.3:"
+_CPE_VENDOR_INDEX = 3
+_CPE_PRODUCT_INDEX = 4
+_CPE_VERSION_INDEX = 5
+# NVD writes "any version" as * and "not applicable" as - in the version field.
+_UNBOUNDED_VERSION = ("", "*", "-")
+
+_BRANDS_KEY = "brands"
+_MATCH_KEY = "match"
+_VENDOR_KEY = "vendor"
+_PRODUCT_KEY = "product"
+_USERS_KEY = "users"
+_PASSWORDS_KEY = "passwords"
+_URLS_KEY = "url_templates"
+
+_NMAP_SOURCE = "nmap"
+_SHODAN_SOURCE = "shodan"
+
+
+class BrandsFileError(Exception):
+    """The brands file is missing, unreadable or holds a malformed entry."""
 
 
 @dataclass(frozen=True)
-class CredentialSet:
-    """A brand-specific credential set for RTSP probing."""
+class ServiceEvidence:
+    """What a scan reported about one service: the raw material to identify on.
 
-    users: tuple[str, ...]
-    passwords: tuple[str, ...]
-    url_templates: tuple[str, ...]
+    `banner` is the text the patterns run against. For Shodan that is the raw
+    banner; for nmap it is the service product string, which is the only free
+    text nmap gives. The whole object is what a camera row keeps as its
+    `raw_banner`, so a device that matched nothing today can be re-read from the
+    database once the file gains its brand (FR-014).
+    """
+
+    source: str
+    banner: str = ""
+    product: str = ""
+    version: str = ""
+    cpe: str = ""
+
+    @classmethod
+    def from_nmap(cls, service: dict) -> "ServiceEvidence":
+        """The evidence in one nmap service element."""
+        product = str(service.get("product", ""))
+        return cls(
+            source=_NMAP_SOURCE,
+            banner=product,
+            product=product,
+            version=str(service.get("version", "")),
+            cpe=str(service.get("cpe", "")),
+        )
+
+    @classmethod
+    def from_shodan(cls, banner_text: str) -> "ServiceEvidence":
+        """The evidence in one Shodan banner."""
+        return cls(source=_SHODAN_SOURCE, banner=banner_text)
+
+    @classmethod
+    def from_stored(cls, raw: dict | None) -> "ServiceEvidence":
+        """The evidence a camera row kept, read back on a later run."""
+        stored = raw or {}
+        return cls(
+            source=str(stored.get("source", "")),
+            banner=str(stored.get("banner", "")),
+            product=str(stored.get("product", "")),
+            version=str(stored.get("version", "")),
+            cpe=str(stored.get("cpe", "")),
+        )
+
+    @property
+    def text(self) -> str:
+        """The text to match patterns against, whichever field carries it."""
+        return self.banner or self.product
 
 
 @dataclass(frozen=True)
-class BrandProbeConfig:
-    """Configuration for brand-aware credential probing."""
+class BrandSignature:
+    """One entry of brands.yaml: what it matches on and what it identifies."""
 
-    config: CheckersConfig
-    camera_ip: str
-    camera_port: int
+    name: str
+    patterns: tuple[re.Pattern, ...]
+    vendor: str
+    product: str
+    users: tuple[str, ...] = ()
+    passwords: tuple[str, ...] = ()
+    url_templates: tuple[str, ...] = ()
 
+    def matches(self, text: str) -> bool:
+        return any(pattern.search(text) for pattern in self.patterns)
 
-class BrandCredentialRegistry:
-    """Registry of brand-specific credential sets and lookup logic."""
-
-    _CREDENTIALS: dict[str, CredentialSet] = {}
-
-    @classmethod
-    def _hikvision(cls) -> CredentialSet:
-        return CredentialSet(
-            users=("admin",),
-            passwords=(
-                "admin",
-                "12345",
-                "123456",
-                "12345678",
-                "Password123",
-                "Hik12345",
-                "abc123",
-                "1q2w3e4r",
-            ),
-            url_templates=(
-                "rtsp://{0}:{1}@{2}:{3}/h264/ch1/main/av_stream",
-                "rtsp://{0}:{1}@{2}:{3}/h264/ch2/sub/av_stream",
-                "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101",
-                "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/102",
-            ),
-        )
-
-    @classmethod
-    def _dahua(cls) -> CredentialSet:
-        return CredentialSet(
-            users=("admin",),
-            passwords=(
-                "admin",
-                "12345",
-                "888888",
-                "123456",
-                "111111",
-                "admin12345",
-                "Password123",
-            ),
-            url_templates=(
-                "rtsp://{0}:{1}@{2}:{3}/live/supStream",
-                "rtsp://{0}:{1}@{2}:{3}/live/subStream",
-                "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101",
-                "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/102",
-                "rtsp://{0}:{1}@{2}:{3}/cam/realmonitor?channel=1&subtype=1",
-                "rtsp://{0}:{1}@{2}:{3}/cam/realmonitor?channel=1&subtype=0",
-            ),
-        )
-
-    @classmethod
-    def _generic_nginx(cls) -> CredentialSet:
-        return CredentialSet(
-            ("admin", "root", "user"),
-            (
-                "admin",
-                "password",
-                "12345",
-                "123456",
-                "root",
-                "888888",
-                "000000",
-                "111111",
-            ),
-            (
-                "rtsp://{0}:{1}@{2}:{3}/",
-                "rtsp://{0}:{1}@{2}:{3}/live.sdp",
-                "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101",
-                "rtsp://{0}:{1}@{2}:{3}/h264/ch1/main/av_stream",
-            ),
-        )
-
-    @classmethod
-    def _amcrest(cls) -> CredentialSet:
-        return CredentialSet(
-            users=("admin",),
-            passwords=("admin", "amcrest", "12345", "123456", "666666", "888888"),
-            url_templates=(
-                "rtsp://{0}:{1}@{2}:{3}/cam/realmonitor?channel=1&subtype=0",
-                "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101",
-                "rtsp://{0}:{1}@{2}:{3}/video1",
-            ),
-        )
-
-    @classmethod
-    def _reolink(cls) -> CredentialSet:
-        return CredentialSet(
-            users=("admin",),
-            passwords=("admin", "123456", "12345", "password", ""),
-            url_templates=(
-                "rtsp://{0}:{1}@{2}:{3}/h264/ch1/main/av_stream",
-                "rtsp://{0}:{1}@{2}:{3}/h264/ch1/sub/av_stream",
-                "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101",
-            ),
-        )
-
-    @classmethod
-    def _axis(cls) -> CredentialSet:
-        return CredentialSet(
-            users=("root", "admin"),
-            passwords=("pass", "admin", "admin", "12345", "password"),
-            url_templates=(
-                "rtsp://{0}:{1}@{2}:{3}/axis-media/media.amp",
-                "rtsp://{0}:{1}@{2}:{3}/axis-cgi/mjpegb/stream",
-                "rtsp://{0}:{1}@{2}:{3}/mjpg/mjpg.cgi",
-            ),
-        )
-
-    @classmethod
-    def _samsung(cls) -> CredentialSet:
-        return CredentialSet(
-            users=("admin",),
-            passwords=("admin", "4321", "1234", "111111", "888888", "666666"),
-            url_templates=(
-                "rtsp://{0}:{1}@{2}:{3}/mpeg4/media.amp",
-                "rtsp://{0}:{1}@{2}:{3}/multiMediaOutput/ch1",
-                "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101",
-            ),
-        )
-
-    @classmethod
-    def _panasonic(cls) -> CredentialSet:
-        return CredentialSet(
-            users=("admin",),
-            passwords=("admin", "12345", "1234", "password", "root"),
-            url_templates=(
-                "rtsp://{0}:{1}@{2}:{3}/video1",
-                "rtsp://{0}:{1}@{2}:{3}/video2",
-            ),
-        )
-
-    @classmethod
-    def _bosch(cls) -> CredentialSet:
-        return CredentialSet(
-            users=("admin", "root"),
-            passwords=("admin", "bosch", "secret", "password", "123456"),
-            url_templates=(
-                "rtsp://{0}:{1}@{2}:{3}/video1",
-                "rtsp://{0}:{1}@{2}:{3}/axis-media/media.amp",
-            ),
-        )
-
-
-class BrandCredentialLoader:
-    """Loads brand credential sets into the registry."""
-
-    @classmethod
-    def _generic_nginx(cls) -> CredentialSet:
-        return CredentialSet(
-            users=("admin", "root", "user"),
-            passwords=(
-                "admin",
-                "password",
-                "12345",
-                "123456",
-                "root",
-                "888888",
-                "000000",
-                "111111",
-            ),
-            url_templates=(
-                "rtsp://{0}:{1}@{2}:{3}/",
-                "rtsp://{0}:{1}@{2}:{3}/live.sdp",
-                "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101",
-                "rtsp://{0}:{1}@{2}:{3}/h264/ch1/main/av_stream",
-            ),
-        )
-
-    @classmethod
-    def _generic_lighttpd(cls) -> CredentialSet:
-        return CredentialSet(
-            users=("admin", "user"),
-            passwords=("admin", "password", "12345", "123456", "0000", "888888"),
-            url_templates=(
-                "rtsp://{0}:{1}@{2}:{3}/",
-                "rtsp://{0}:{1}@{2}:{3}/live1.sdp",
-                "rtsp://{0}:{1}@{2}:{3}/live2.sdp",
-            ),
-        )
-
-    @classmethod
-    def _generic_apache(cls) -> CredentialSet:
-        return CredentialSet(
-            users=("admin", "root"),
-            passwords=("admin", "password", "12345", "123456", "1234"),
-            url_templates=(
-                "rtsp://{0}:{1}@{2}:{3}/",
-                "rtsp://{0}:{1}@{2}:{3}/movie.cgi",
-                "rtsp://{0}:{1}@{2}:{3}/cgi-bin/video.cgi",
-            ),
-        )
-
-    @classmethod
-    def _generic_onvif(cls) -> CredentialSet:
-        return CredentialSet(
-            users=("admin", "root", "user"),
-            passwords=("admin", "password", "12345", "123456", "000000", "111111"),
-            url_templates=(
-                "rtsp://{0}:{1}@{2}:{3}/",
-                "rtsp://{0}:{1}@{2}:{3}/video1",
-                "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101",
-            ),
-        )
-
-    _CREDENTIALS: dict[str, CredentialSet] = {}
-
-    @classmethod
-    def init(cls) -> dict[str, CredentialSet]:
-        if cls._CREDENTIALS:
-            return cls._CREDENTIALS
-        cls._CREDENTIALS = {
-            "hikvision": BrandCredentialRegistry._hikvision.__func__(cls),
-            "dahua": BrandCredentialRegistry._dahua.__func__(cls),
-            "amcrest": BrandCredentialRegistry._amcrest.__func__(cls),
-            "reolink": BrandCredentialRegistry._reolink.__func__(cls),
-            "axis": BrandCredentialRegistry._axis.__func__(cls),
-            "samsung": BrandCredentialRegistry._samsung.__func__(cls),
-            "panasonic": BrandCredentialRegistry._panasonic.__func__(cls),
-            "bosch": BrandCredentialRegistry._bosch.__func__(cls),
-            "generic_nginx": cls._generic_nginx(),
-            "generic_lighttpd": cls._generic_lighttpd(),
-            "generic_apache": cls._generic_apache(),
-            "generic_onvif": cls._generic_onvif(),
-        }
-        return cls._CREDENTIALS
-
-    @classmethod
-    def lookup(cls, brand: str) -> CredentialSet | None:
-        if not cls._CREDENTIALS:
-            cls.init()
-        return cls._CREDENTIALS.get(brand)
-
-
-class ComboBuilder:
-    """Builds (user, password, url_template) combos for a camera."""
-
-    @classmethod
-    def build(
-        cls, cfg: BrandProbeConfig, banner: str | None = None
-    ) -> list[tuple[str, str, str]]:
-        brand = BrandDetector().detect(banner or "")
-        seen: set[tuple[str, str, str]] = set()
-        combos: list[tuple[str, str, str]] = []
-        BrandCredentialLoader.init()
-        cls._lookup_brand(brand, seen, combos)
-        cls._add_generic(cfg.config, seen, combos)
-        return combos
-
-    @classmethod
-    def _lookup_brand(
-        cls,
-        brand: str | None,
-        seen: set[tuple[str, str, str]],
-        combos: list[tuple[str, str, str]],
-    ) -> None:
-        brand_creds = BrandCredentialLoader.lookup(brand) if brand else None
-        if brand_creds:
-            cls._add_brand(brand_creds, seen, combos)
-
-    @classmethod
-    def _add_brand(
-        cls,
-        creds: CredentialSet,
-        seen: set[tuple[str, str, str]],
-        combos: list[tuple[str, str, str]],
-    ) -> None:
-        _UserComboAdder(creds, seen, combos).execute()
-
-    @classmethod
-    def _add_generic(
-        cls,
-        config: CheckersConfig,
-        seen: set[tuple[str, str, str]],
-        combos: list[tuple[str, str, str]],
-    ) -> None:
-        builder = cls.__new__(cls)
-        users = builder._read_lines(config.wordlist_users)
-        passwords = builder._read_lines(config.wordlist_passwords)
-        url_templates = builder._read_lines(config.wordlist_rtsp_urls)
-        _GenericComboAdder(users, passwords, url_templates, seen, combos).execute()
-
-    def _read_lines(self, path_str: str) -> list[str]:
-        return Path(path_str).read_text(encoding="utf-8").splitlines()
+    def combos(self) -> list[tuple[str, str, str]]:
+        """This brand's (url_template, user, password) combos, in try order."""
+        return [
+            (template, user, password)
+            for template in self.url_templates
+            for user in self.users
+            for password in self.passwords
+        ]
 
 
 @dataclass(frozen=True)
-class _UserComboAdder:
-    """Adds brand-specific credential combos."""
+class _Entry:
+    """One brands.yaml entry, with where it sits so an error can name the line."""
 
-    creds: CredentialSet
-    seen: set[tuple[str, str, str]]
-    combos: list[tuple[str, str, str]]
+    name: str
+    body: object
+    path: str
+    line: int = 0
 
-    def execute(self) -> None:
-        _PasswordUrlLoop(
-            self.creds.passwords,
-            self.creds.url_templates,
-            self.creds.users,
-            self.seen,
-            self.combos,
-        ).execute()
+    @property
+    def where(self) -> str:
+        return f"{self.path}:{self.line}" if self.line else self.path
 
 
 @dataclass(frozen=True)
-class _PasswordUrlLoop:
-    """Inner loop: passwords × url_templates."""
+class Identified:
+    """What the identification read off a device. Empty fields mean unnamed."""
 
-    passwords: tuple[str, ...]
-    url_templates: tuple[str, ...]
-    users: tuple[str, ...]
-    seen: set[tuple[str, str, str]]
-    combos: list[tuple[str, str, str]]
-
-    def execute(self) -> None:
-        for password in self.passwords:
-            _UrlLoop(
-                self.url_templates,
-                password,
-                self.users,
-                self.seen,
-                self.combos,
-            ).execute()
+    vendor: str = ""
+    product: str = ""
+    version: str = ""
+    brand: str = ""
 
 
-@dataclass(frozen=True)
-class _UrlLoop:
-    """Innermost loop: url_templates."""
+class BrandBook:
+    """The brands file, read once, matched in the order the file lists them."""
 
-    url_templates: tuple[str, ...]
-    password: str
-    users: tuple[str, ...]
-    seen: set[tuple[str, str, str]]
-    combos: list[tuple[str, str, str]]
+    def __init__(self, signatures: tuple[BrandSignature, ...]) -> None:
+        self._signatures = signatures
 
-    def execute(self) -> None:
-        for url_tmpl in self.url_templates:
-            for user in self.users:
-                self._add_unique(user, self.password, url_tmpl)
+    @classmethod
+    def load(cls, path: str) -> "BrandBook":
+        """Read the file, refusing a malformed entry at its own line."""
+        text = cls._read(path)
+        entries = cls._entries(text, path)
+        lines = cls._brand_lines(text)
+        return cls(
+            tuple(
+                cls._signature(
+                    _Entry(
+                        name=name,
+                        body=entry,
+                        path=path,
+                        line=lines.get(name, 0),
+                    )
+                )
+                for name, entry in entries.items()
+            )
+        )
 
-    def _add_unique(self, user: str, password: str, url_template: str) -> None:
-        key = (user, password, url_template)
-        if key not in self.seen:
-            self.combos.append(key)
-            self.seen.add(key)
-
-
-@dataclass(frozen=True)
-class _GenericComboAdder:
-    """Adds generic wordlist credential combos."""
-
-    users: list[str]
-    passwords: list[str]
-    url_templates: list[str]
-    seen: set[tuple[str, str, str]]
-    combos: list[tuple[str, str, str]]
-
-    def execute(self) -> None:
-        _GenericPasswordUrlLoop(
-            self.passwords,
-            self.url_templates,
-            self.users,
-            self.seen,
-            self.combos,
-        ).execute()
-
-    def _add_unique(
-        self,
-        user: str,
-        password: str,
-        url_template: str,
-    ) -> None:
-        key = (user, password, url_template)
-        if key not in self.seen:
-            self.combos.append(key)
-            self.seen.add(key)
-
-
-@dataclass(frozen=True)
-class _GenericPasswordUrlLoop:
-    """Inner loop for generic wordlist combos."""
-
-    passwords: list[str]
-    url_templates: list[str]
-    users: list[str]
-    seen: set[tuple[str, str, str]]
-    combos: list[tuple[str, str, str]]
-
-    def execute(self) -> None:
-        for password in self.passwords:
-            _GenericUrlLoop(
-                self.url_templates,
-                password,
-                self.users,
-                self.seen,
-                self.combos,
-            ).execute()
-
-
-@dataclass(frozen=True)
-class _GenericUrlLoop:
-    """Innermost loop for generic wordlist combos."""
-
-    url_templates: list[str]
-    password: str
-    users: list[str]
-    seen: set[tuple[str, str, str]]
-    combos: list[tuple[str, str, str]]
-
-    def execute(self) -> None:
-        for url_tmpl in self.url_templates:
-            for user in self.users:
-                self._add_unique(user, self.password, url_tmpl)
-
-    def _add_unique(self, user: str, password: str, url_template: str) -> None:
-        key = (user, password, url_template)
-        if key not in self.seen:
-            self.combos.append(key)
-            self.seen.add(key)
-
-
-class BrandDetector:
-    """Detects camera brand from a Shodan banner string."""
-
-    def detect(self, banner_text: str) -> str | None:
-        if not banner_text:
+    def match(self, text: str) -> BrandSignature | None:
+        """The first brand whose patterns hit the text, or None."""
+        if not text:
             return None
-        for raw_pattern, brand_label in BRAND_PATTERN_SPECS:
-            try:
-                compiled = re.compile(raw_pattern, re.IGNORECASE)
-            except re.error:
-                continue
-            if compiled.search(banner_text):
-                return brand_label
-        return None
+        return next((brand for brand in self._signatures if brand.matches(text)), None)
 
+    @classmethod
+    def _read(cls, path: str) -> str:
+        try:
+            return Path(path).read_text(encoding="utf-8")
+        except OSError as error:
+            raise BrandsFileError(f"cannot read brands file {path}: {error}") from error
 
-class BrandProbe:
-    """Entry point for brand-aware credential probing."""
+    @classmethod
+    def _entries(cls, text: str, path: str) -> dict:
+        """The `brands` mapping, or a refusal naming the file."""
+        try:
+            document = yaml.safe_load(text) or {}
+        except yaml.YAMLError as error:
+            raise BrandsFileError(f"cannot read brands file {path}: {error}") from error
+        entries = document.get(_BRANDS_KEY) if isinstance(document, dict) else None
+        if not isinstance(entries, dict):
+            raise BrandsFileError(f"{path}: no `{_BRANDS_KEY}` mapping")
+        return entries
 
-    def __init__(self, config: CheckersConfig) -> None:
-        self._config = config
+    @classmethod
+    def _brand_lines(cls, text: str) -> dict[str, int]:
+        """Where each brand key sits, so a bad entry can name its line."""
+        document = yaml.compose(text)
+        if not isinstance(document, yaml.MappingNode):
+            return {}
+        for key_node, value_node in document.value:
+            if key_node.value == _BRANDS_KEY and isinstance(
+                value_node, yaml.MappingNode
+            ):
+                return {
+                    brand.value: brand.start_mark.line + 1
+                    for brand, _ in value_node.value
+                }
+        return {}
 
-    def detect_brand(self, banner_text: str) -> str | None:
-        detector = BrandDetector()
-        return detector.detect(banner_text)
-
-    def build_combos(
-        self,
-        camera_ip: str,
-        camera_port: int,
-        banner: str | None = None,
-    ) -> list[tuple[str, str, str]]:
-        cfg = BrandProbeConfig(
-            config=self._config,
-            camera_ip=camera_ip,
-            camera_port=camera_port,
+    @classmethod
+    def _signature(cls, entry: _Entry) -> BrandSignature:
+        if not isinstance(entry.body, dict):
+            raise BrandsFileError(
+                f"{entry.where}: brand {entry.name!r} is not a mapping"
+            )
+        return BrandSignature(
+            name=entry.name,
+            patterns=cls._patterns(entry),
+            vendor=cls._required(entry, _VENDOR_KEY),
+            product=cls._required(entry, _PRODUCT_KEY),
+            users=cls._listed(entry, _USERS_KEY),
+            passwords=cls._listed(entry, _PASSWORDS_KEY),
+            url_templates=cls._listed(entry, _URLS_KEY),
         )
-        return ComboBuilder.build(cfg, banner)
+
+    @classmethod
+    def _patterns(cls, entry: _Entry) -> tuple[re.Pattern, ...]:
+        """The compiled patterns, refusing a brand with nothing to match on."""
+        raw = entry.body.get(_MATCH_KEY)
+        if not isinstance(raw, list) or not raw:
+            raise BrandsFileError(
+                f"{entry.where}: brand {entry.name!r} needs a non-empty "
+                f"`{_MATCH_KEY}` list"
+            )
+        return tuple(cls._compiled(entry, pattern) for pattern in raw)
+
+    @classmethod
+    def _compiled(cls, entry: _Entry, pattern: object) -> re.Pattern:
+        try:
+            return re.compile(str(pattern), re.IGNORECASE)
+        except re.error as error:
+            raise BrandsFileError(
+                f"{entry.where}: brand {entry.name!r} has an unusable pattern "
+                f"{pattern!r}: {error}"
+            ) from error
+
+    @classmethod
+    def _required(cls, entry: _Entry, key: str) -> str:
+        value = str(entry.body.get(key, "")).strip()
+        if not value:
+            raise BrandsFileError(
+                f"{entry.where}: brand {entry.name!r} needs a `{key}`"
+            )
+        return value
+
+    @classmethod
+    def _listed(cls, entry: _Entry, key: str) -> tuple[str, ...]:
+        raw = entry.body.get(key)
+        if raw is None:
+            return ()
+        if not isinstance(raw, list):
+            raise BrandsFileError(f"{entry.where}: `{key}` must be a list, got {raw!r}")
+        return tuple(str(item) for item in raw)
 
 
-if __name__ == "__main__":
-    BrandCredentialLoader.init()
+class Identifier:
+    """Reads a device's identity out of the evidence a scan collected."""
+
+    def __init__(self, book: BrandBook) -> None:
+        self._book = book
+
+    def identify(self, evidence: ServiceEvidence) -> Identified:
+        """What the evidence names, or an empty identity when it names nothing."""
+        from_cpe = self._from_cpe(evidence)
+        if from_cpe is not None:
+            return from_cpe
+        brand = self.signature(evidence)
+        if brand is None:
+            return Identified(version=evidence.version)
+        return Identified(
+            vendor=brand.vendor,
+            product=brand.product,
+            version=evidence.version,
+            brand=brand.name,
+        )
+
+    def signature(self, evidence: ServiceEvidence) -> BrandSignature | None:
+        """The brand entry the evidence matches, if any."""
+        return self._book.match(evidence.text)
+
+    def _from_cpe(self, evidence: ServiceEvidence) -> Identified | None:
+        """The CPE the scan reported, which outranks a pattern: the device said it."""
+        if not evidence.cpe.startswith(_CPE_PREFIX):
+            return None
+        parts = evidence.cpe.split(":")
+        if len(parts) <= _CPE_VERSION_INDEX:
+            return None
+        version = parts[_CPE_VERSION_INDEX]
+        return Identified(
+            vendor=parts[_CPE_VENDOR_INDEX].lower(),
+            product=parts[_CPE_PRODUCT_INDEX].lower(),
+            version="" if version in _UNBOUNDED_VERSION else version,
+        )

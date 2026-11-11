@@ -3,8 +3,9 @@ import os
 from argparse import ArgumentParser, Namespace
 from collections.abc import Callable
 
+from scanners.brand_probe import BrandBook, Identifier
 from scanners.config import AppConfig, NmapConfig, ShodanConfig, load_config
-from scanners.task import NmapTask, ShodanTask, Task
+from scanners.task import CheckDeps, CheckTask, NmapTask, ShodanDeps, ShodanTask, Task
 
 __version__ = "0.1.0"
 
@@ -15,12 +16,32 @@ class TaskFactory:
     def __init__(self, config: AppConfig) -> None:
         self._config = config
 
-    def build_nmap(self, target: str | None) -> NmapTask:
+    def build_nmap(self, arguments: Namespace) -> NmapTask:
         """The nmap task, over the target given or the configured range."""
-        return NmapTask(self._nmap_config(target))
+        return NmapTask(self._nmap_config(arguments.argument), self._identifier())
 
-    def build_shodan(self, query: str | None) -> ShodanTask:
-        return ShodanTask(self._shodan_config(query))
+    def build_shodan(self, arguments: Namespace) -> ShodanTask:
+        return ShodanTask(
+            ShodanDeps(
+                config=self._shodan_config(arguments.argument),
+                targets=self._config.targets,
+                identifier=self._identifier(),
+            )
+        )
+
+    def build_check(self, arguments: Namespace) -> CheckTask:
+        return CheckTask(
+            CheckDeps(
+                config=self._config.checkers,
+                targets=self._config.targets,
+                identifier=self._identifier(),
+                camera_id=arguments.camera_id,
+            )
+        )
+
+    def _identifier(self) -> Identifier:
+        """The brand book, read from the configured file, once per command."""
+        return Identifier(BrandBook.load(self._config.brands.signature_path))
 
     def _nmap_config(self, target: str | None) -> NmapConfig:
         if target is None:
@@ -32,6 +53,7 @@ class TaskFactory:
             return self._config.shodan
         return self._config.shodan.model_copy(update={"query": query})
 
+
 class CommandLine:
     """Dispatches the parsed command line to the task it names (D34, D38)."""
 
@@ -40,11 +62,15 @@ class CommandLine:
 
     def execute(self, arguments: Namespace) -> None:
         """Run the task the command line asks for."""
-        self._scan_commands()[arguments.command](arguments.argument).run()
+        self._scan_commands()[arguments.command](arguments).run()
 
-    def _scan_commands(self) -> dict[str, Callable[[str | None], Task]]:
+    def _scan_commands(self) -> dict[str, Callable[[Namespace], Task]]:
         factory = TaskFactory(self._config)
-        return {"nmap": factory.build_nmap, "shodan": factory.build_shodan}
+        return {
+            "nmap": factory.build_nmap,
+            "shodan": factory.build_shodan,
+            "check": factory.build_check,
+        }
 
 
 def parse_args() -> Namespace:
@@ -68,6 +94,14 @@ def parse_args() -> Namespace:
         "shodan", help="Find cameras through the Shodan API"
     ).add_argument(
         "argument", nargs="?", help="Shodan query; defaults to shodan.query"
+    )
+    commands.add_parser(
+        "check", help="Try credentials against the stored cameras"
+    ).add_argument(
+        "--camera-id",
+        type=int,
+        default=0,
+        help="Restrict the run to one camera id; defaults to every camera waiting",
     )
     return parser.parse_args()
 

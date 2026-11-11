@@ -3,10 +3,19 @@
 shodan:
   api_key: "<your_shodan_api_key>"
   # A query runs only when it names the range it may reach (`net:`) and that
-  # range is declared below (D18, FR-001). Without both, the scan is refused
-  # before any API call: Shodan cannot be asked whether a result set stays
-  # inside a range, so a query with no `net:` filter reaches the whole index.
+  # range is declared under `targets` (D18, FR-001). Without both, the scan is
+  # refused before any API call: Shodan cannot be asked whether a result set
+  # stays inside a range, so a query with no `net:` filter reaches the whole
+  # index.
   query: "net:203.0.113.0/24 screenshot.label:webcam,cam"
+
+targets:
+  # The one list of what this scanner may reach (D18, FR-001). It guards the
+  # Shodan query and every command that reaches a stored camera, so the
+  # authorization is written once. Empty authorizes nothing: a check run over
+  # cameras already in the database is refused until its addresses are here.
+  # A run narrowed with `scan check --camera-id N` reaches the camera the
+  # operator named, which is the authorization itself.
   allowed_cidrs: ["203.0.113.0/24"]  # your lab, or a range you may scan in writing
 
 checkers:

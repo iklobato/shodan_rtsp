@@ -46,6 +46,29 @@ class CameraRepository:
         with self._db.session_scope() as session:
             return self._find_in(session, ip, port)
 
+    def find_by_id(self, camera_id: int) -> Camera | None:
+        """The camera of one id, for a run narrowed to a single camera."""
+        with self._db.session_scope() as session:
+            return session.get(Camera, camera_id)
+
+    def record_identity(self, camera: Camera) -> Camera:
+        """Write what a scan read off the device onto its row, creating it.
+
+        The row holds what the device looks like now, so a device first seen
+        before its brand was in brands.yaml picks up the name on the next run.
+        The per-run sighting is the observation's job, not this one.
+        """
+        with self._db.session_scope() as session:
+            stored = self._find_in(session, camera.ip, camera.port)
+            if stored is None:
+                session.add(camera)
+                return camera
+            stored.vendor = camera.vendor
+            stored.product = camera.product
+            stored.version = camera.version
+            stored.raw_banner = camera.raw_banner
+            return stored
+
     def get_random_without_frame(self) -> list[Camera]:
         """The cameras with no frame yet, shuffled: the check task's queue."""
         with self._db.session_scope() as session:

@@ -7,15 +7,24 @@ suite runs without the scanning stack installed.
 """
 
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from models.camera import Camera, CameraStatus
 from models.managers import CameraRepository
+from scanners.brand_probe import BrandBook, Identifier
 from scanners.config import CheckersConfig, NmapConfig, load_config
 from scanners.rtsp_probe import DirectTransport, RtspTarget
 from tests.conftest import MemoryDatabase
+
+if TYPE_CHECKING:
+    from scanners.task import CheckDeps
+
+# The brands file the repo ships, so these tests also read the real one.
+_BRANDS_FILE = Path(__file__).resolve().parents[1] / "brands.yaml"
 
 
 # --- domain values --------------------------------------------------------
@@ -83,8 +92,14 @@ class _StubNmapScanner:
         return self._xml
 
 
+@pytest.fixture
+def identifier() -> Identifier:
+    """The identifier over the brands file this repo ships."""
+    return Identifier(BrandBook.load(str(_BRANDS_FILE)))
+
+
 def test_nmap_task_scans_the_service_ports(
-    tmp_path: Path, database: MemoryDatabase
+    tmp_path: Path, database: MemoryDatabase, identifier: Identifier
 ) -> None:
     """One nmap invocation over the port list of D15, with no proxy argument."""
     pytest.importorskip("nmap")
@@ -93,6 +108,7 @@ def test_nmap_task_scans_the_service_ports(
     scanner = _StubNmapScanner({})
     task = NmapTask(
         NmapConfig(ip_range=_LAB_RANGE, xml_path=str(tmp_path / _NMAP_XML_NAME)),
+        identifier,
         database,
     )
     task.scanner = scanner
@@ -101,14 +117,14 @@ def test_nmap_task_scans_the_service_ports(
 
 
 def test_nmap_task_stores_open_ports_only(
-    tmp_path: Path, database: MemoryDatabase
+    tmp_path: Path, database: MemoryDatabase, identifier: Identifier
 ) -> None:
     """A live host with 554 closed must not land in the DB as a camera."""
     pytest.importorskip("nmap")
     from scanners.task import NmapTask
 
     config = NmapConfig(ip_range=_LAB_RANGE, xml_path=str(tmp_path / _NMAP_XML_NAME))
-    task = NmapTask(config, database)
+    task = NmapTask(config, identifier, database)
     task.scanner = _StubNmapScanner(
         {
             "10.0.0.1": {"tcp": {_RTSP_PORT: {"state": "closed"}}},
@@ -122,7 +138,7 @@ def test_nmap_task_stores_open_ports_only(
 
 
 def test_nmap_task_records_the_run_it_reached(
-    tmp_path: Path, database: MemoryDatabase
+    tmp_path: Path, database: MemoryDatabase, identifier: Identifier
 ) -> None:
     """FR-002: the run keeps the range it was allowed to reach, and its result."""
     pytest.importorskip("nmap")
@@ -130,7 +146,7 @@ def test_nmap_task_records_the_run_it_reached(
     from scanners.task import NmapTask
 
     config = NmapConfig(ip_range=_LAB_RANGE, xml_path=str(tmp_path / _NMAP_XML_NAME))
-    task = NmapTask(config, database)
+    task = NmapTask(config, identifier, database)
     task.scanner = _StubNmapScanner(
         {"10.0.0.2": {"tcp": {_RTSP_PORT: {"state": "open"}}}}
     )
@@ -143,7 +159,9 @@ def test_nmap_task_records_the_run_it_reached(
         assert run.finished_at is not None
 
 
-def test_nmap_task_keeps_the_run_xml(tmp_path: Path, database: MemoryDatabase) -> None:
+def test_nmap_task_keeps_the_run_xml(
+    tmp_path: Path, database: MemoryDatabase, identifier: Identifier
+) -> None:
     """The vuln mode reads this file, so the run must leave it on disk."""
     pytest.importorskip("nmap")
     from scanners.task import NmapTask
@@ -151,6 +169,7 @@ def test_nmap_task_keeps_the_run_xml(tmp_path: Path, database: MemoryDatabase) -
     xml = b'<nmaprun><host><address addr="10.0.0.2"/></host></nmaprun>'
     task = NmapTask(
         NmapConfig(ip_range=_LAB_RANGE, xml_path=str(tmp_path / _NMAP_XML_NAME)),
+        identifier,
         database,
     )
     task.scanner = _StubNmapScanner({}, xml=xml)
@@ -198,17 +217,147 @@ def test_shodan_query_outside_the_declared_ranges_is_refused(
 ) -> None:
     """Every way of reaching past the declared list fails closed, before the API."""
     pytest.importorskip("shodan")
-    from scanners.task import ShodanScope, TargetOutsideScopeError
+    from scanners.task import TargetGate, TargetOutsideScopeError
 
     with pytest.raises(TargetOutsideScopeError):
-        ShodanScope(allowed).require_inside(query)
+        TargetGate(allowed).require_inside(query)
 
 
 def test_shodan_query_inside_the_declared_range_passes() -> None:
     pytest.importorskip("shodan")
-    from scanners.task import ShodanScope
+    from scanners.task import TargetGate
 
-    ShodanScope([_DECLARED]).require_inside(_INSIDE)
+    TargetGate([_DECLARED]).require_inside(_INSIDE)
+
+
+# --- the gate over stored cameras (FR-001, D18) ---------------------------
+
+_STORED_INSIDE: tuple[str, ...] = ("10.1.2.3", "10.9.9.9")
+_STORED_OUTSIDE: tuple[str, ...] = ("10.1.2.3", "192.0.2.10", "198.51.100.7")
+_STORED_UNPARSABLE: tuple[str, ...] = ("not-an-address",)
+_MANY_OUTSIDE: tuple[str, ...] = tuple(f"192.0.2.{last}" for last in range(1, 13))
+_NAMED_LIMIT = 10
+
+
+def test_a_run_over_declared_addresses_passes() -> None:
+    """Every stored camera inside the declared list, so nothing to refuse."""
+    from scanners.task import TargetGate
+
+    TargetGate([_DECLARED]).require_reachable(_STORED_INSIDE)
+
+
+def test_a_run_over_outside_addresses_is_refused() -> None:
+    """A stored camera outside the declared list stops the whole run."""
+    from scanners.task import TargetGate, TargetOutsideScopeError
+
+    with pytest.raises(TargetOutsideScopeError) as refused:
+        TargetGate([_DECLARED]).require_reachable(_STORED_OUTSIDE)
+
+    assert "192.0.2.10" in str(refused.value), (
+        f"the refusal does not name the first outside address: {refused.value}"
+    )
+    assert "198.51.100.7" in str(refused.value), (
+        f"the refusal stops at the first address instead of naming every one: "
+        f"{refused.value}"
+    )
+
+
+def test_an_empty_declaration_refuses_every_address() -> None:
+    """No declared list authorizes nothing, so a stored camera is out too."""
+    from scanners.task import TargetGate, TargetOutsideScopeError
+
+    with pytest.raises(TargetOutsideScopeError):
+        TargetGate(_NO_DECLARATION).require_reachable(_STORED_INSIDE)
+
+
+def test_an_address_that_does_not_parse_is_outside() -> None:
+    """An address the gate cannot read is never treated as declared."""
+    from scanners.task import TargetGate, TargetOutsideScopeError
+
+    with pytest.raises(TargetOutsideScopeError):
+        TargetGate([_DECLARED]).require_reachable(_STORED_UNPARSABLE)
+
+
+def test_a_long_refusal_stops_naming_after_the_limit() -> None:
+    """The whole camera table is not an error line: it is cut, and the rest counted."""
+    from scanners.task import TargetGate, TargetOutsideScopeError
+
+    with pytest.raises(TargetOutsideScopeError) as refused:
+        TargetGate([_DECLARED]).require_reachable(_MANY_OUTSIDE)
+
+    message = str(refused.value)
+    assert f"192.0.2.{_NAMED_LIMIT}" in message, (
+        f"the address at the limit is missing: {message}"
+    )
+    assert f"192.0.2.{_NAMED_LIMIT + 1}" not in message, (
+        f"the list was not cut short: {message}"
+    )
+    assert f"and {len(_MANY_OUTSIDE) - _NAMED_LIMIT} more" in message, (
+        f"the count of what was left out is missing: {message}"
+    )
+
+
+class _StubProbe:
+    """Fake RTSP probe: records every target it was handed and answers none."""
+
+    def __init__(self) -> None:
+        self.targets: list[RtspTarget] = []
+
+    def probe(self, target: RtspTarget) -> None:
+        self.targets.append(target)
+
+
+class TestCheckGate:
+    """What a check run reaches, over the cameras already in the database."""
+
+    @pytest.fixture
+    def deps(self, tmp_path: Path, identifier: Identifier) -> "CheckDeps":
+        """Check settings over one-line wordlists, so a run tries one combo."""
+        from scanners.config import TargetsConfig
+        from scanners.task import CheckDeps
+
+        wordlist = tmp_path / "one.txt"
+        wordlist.write_text("admin\n")
+        return CheckDeps(
+            config=CheckersConfig(
+                wordlist_users=str(wordlist),
+                wordlist_passwords=str(wordlist),
+                wordlist_rtsp_urls=str(wordlist),
+            ),
+            targets=TargetsConfig(allowed_cidrs=[_DECLARED]),
+            identifier=identifier,
+        )
+
+    def test_a_stored_camera_outside_the_list_is_refused(
+        self, deps: "CheckDeps", database: MemoryDatabase
+    ) -> None:
+        """A camera already in the database is still checked against the list."""
+        from scanners.task import CheckTask, TargetOutsideScopeError
+
+        repository = CameraRepository(database=database)
+        repository.get_or_create(Camera(ip="192.0.2.10", port=_RTSP_PORT))
+        probe = _StubProbe()
+
+        with pytest.raises(TargetOutsideScopeError):
+            CheckTask(replace(deps, probe=probe), database).run()
+
+        assert probe.targets == [], f"the run reached the camera anyway: {probe.targets}"
+
+    def test_narrowing_to_one_camera_reaches_it(
+        self, deps: "CheckDeps", database: MemoryDatabase
+    ) -> None:
+        """D18: `--camera-id` reaches the address the operator named."""
+        from scanners.task import CheckTask
+
+        repository = CameraRepository(database=database)
+        outside = repository.get_or_create(Camera(ip="192.0.2.10", port=_RTSP_PORT))
+        probe = _StubProbe()
+
+        CheckTask(replace(deps, camera_id=outside.id, probe=probe), database).run()
+
+        assert [target.host for target in probe.targets] == ["192.0.2.10"], (
+            f"the narrowed run did not reach the named camera: {probe.targets}"
+        )
 
 
 # --- repository (in-memory sqlite, no external DB) ------------------------

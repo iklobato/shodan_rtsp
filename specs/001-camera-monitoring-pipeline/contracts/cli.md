@@ -60,6 +60,12 @@ credentials are tried before the generic set (D22, FR-015).
 | writes | `camera.user`, `camera.password`, `camera.url`, `camera.status` |
 | network egress | the RTSP port of the cameras already stored |
 
+A run over every camera waiting for a frame is gated: every address it would reach is
+checked against `targets.allowed_cidrs` first, and one address outside the declared list
+stops the whole run before any packet leaves, with the outside addresses named (FR-001,
+D18). A run narrowed with `--camera-id` reaches the camera the operator named, which is
+the authorization itself, so it is not gated.
+
 ### `scan cve [--camera-id N]`
 
 Reads the stored observations (D30), matches them against the CVE map, and for each match

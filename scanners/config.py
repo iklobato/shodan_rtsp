@@ -19,9 +19,16 @@ _DEFAULT_PORTS: tuple[int, ...] = (554, 80, 443, 8000, 8080, 8554, 34567)
 class ShodanConfig(BaseModel):
     api_key: str
     query: str = _DEFAULT_QUERY
-    # The ranges this scanner is allowed to reach (FR-001, D18). Every `net:`
-    # filter in the query must sit inside one of them, and a query that names no
-    # range at all is refused, so an empty list authorizes nothing.
+
+
+class TargetsConfig(BaseModel):
+    """The addresses this scanner may reach (FR-001, D18).
+
+    One list, read by the Shodan gate and by every command that reaches a stored
+    camera, so the authorization is declared once. An empty list authorizes
+    nothing: every check fails closed.
+    """
+
     allowed_cidrs: list[str] = Field(default_factory=list)
 
 
@@ -122,6 +129,7 @@ class AppConfig(BaseModel):
     shodan: ShodanConfig
     checkers: CheckersConfig
     nmap: NmapConfig
+    targets: TargetsConfig = Field(default_factory=TargetsConfig)
     face: FaceConfig = Field(default_factory=FaceConfig)
     vuln: VulnConfig = Field(default_factory=VulnConfig)
     frames: FramesConfig = Field(default_factory=FramesConfig)
