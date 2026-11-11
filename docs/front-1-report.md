@@ -122,4 +122,102 @@ new violation on the files this front touches.
   (`ShodanScope`, T023).
 - `cam`, a legacy table with 229 rows, is in the live database and in none of the
   models. `migrations/env.py` lists it in `LEGACY_TABLES` so autogenerate never
-  proposes dropping it. Nothing was dropped, and the rows were not read.
+  proposes dropping it. Nothing was dropped. The rows were not read by any of the
+  runs above; section 5 is the revision that reads them, and it is the one thing
+  in this report that ran after the commit of Front 1.
+
+## 5. Amendment: revision 0002 moves the legacy rows
+
+`cam` holds 229 rows from one Shodan scan on 2026-08-09 that declared no range.
+Revision `0002` copies them into `camera` and `camera_observation`, under one
+`scan_run` whose `target_set` records that they have no declared target. `cam`
+itself is not dropped, so the 5 frames in its `image_b64` column stay where they
+are until the decode to a file that D17 asks for lands.
+
+Before, on the live lab database:
+
+```
+$ uv run alembic current
+0001
+$ docker exec shodan_pg psql -U scanner -d cameras -c "SELECT (SELECT count(*) FROM cam) AS legacy_cam, (SELECT count(*) FROM camera) AS camera, (SELECT count(*) FROM camera_observation) AS observation, (SELECT count(*) FROM scan_run) AS scan_run;"
+ legacy_cam | camera | observation | scan_run
+------------+--------+-------------+----------
+        229 |      1 |           1 |        2
+```
+
+After:
+
+```
+$ uv run alembic upgrade head
+INFO  [alembic.runtime.migration] Running upgrade 0001 -> 0002, migrate the legacy cam table into camera and camera_observation
+
+ legacy_cam | camera | observation | scan_run
+------------+--------+-------------+----------
+        229 |    230 |         230 |        3
+
+     status      | count
+-----------------+-------
+ unknown         |   225
+ stream_obtained |     5
+
+ id |  kind  | camera_count |                                           target_set
+----+--------+--------------+--------------------------------------------------------------------------------------------
+  3 | shodan |          229 | unknown: imported from the legacy cam table (shodan scan of 2026-08-09 that declared no range)
+```
+
+`camera` and `camera_observation` each grew by 229, `cam` did not change, and the
+5 rows that were `active` carry status `stream_obtained` while the other 224 are
+`unknown`. The 225th `unknown` is the camera the Front 1 lab scan wrote.
+
+The credentials came across, and the value is the stored one:
+
+```
+$ docker exec shodan_pg psql -U scanner -d cameras -c "SELECT (SELECT count(*) FROM cam WHERE \"user\" <> '') AS legacy_with_user, (SELECT count(*) FROM camera WHERE \"user\" <> '') AS migrated_with_user, (SELECT count(*) FROM cam WHERE password <> '') AS legacy_with_password, (SELECT count(*) FROM camera WHERE password <> '') AS migrated_with_password;"
+ legacy_with_user | migrated_with_user | legacy_with_password | migrated_with_password
+------------------+--------------------+----------------------+------------------------
+                5 |                  5 |                    5 |                      5
+
+$ docker exec shodan_pg psql -U scanner -d cameras -c "SELECT \"user\", password FROM cam WHERE \"user\" <> '' LIMIT 3;"
+ user | password
+------+----------
+ root | password
+ root | password
+ root | password
+```
+
+This is worth its own check because `user` is a reserved word in PostgreSQL. Read
+without quotes, `SELECT user FROM cam` returns the name of the connected role for
+every row instead of the column, which is a silent wrong value rather than an
+error. Both the revision and the test quote it, and the query below is the proof
+that no migrated row holds the role name:
+
+```
+$ docker exec shodan_pg psql -U scanner -d cameras -c "SELECT count(*) AS with_the_db_username FROM camera WHERE \"user\" = current_user;"
+ with_the_db_username
+----------------------
+                    0
+```
+
+A second `alembic upgrade head` changes nothing and `alembic check` still reports
+no drift, so the revision is idempotent:
+
+```
+$ uv run alembic upgrade head
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+$ uv run alembic check
+No new upgrade operations detected.
+```
+
+`tests/test_migrations.py` covers the whole thing on a throwaway database: two
+legacy rows land as two cameras with one observation each, a second upgrade adds
+nothing, and `downgrade 0001` takes the migrated rows back out while `cam` keeps
+them. `67 passed`, `All checks passed!`.
+
+### Open risk this amendment leaves behind
+
+The 224 rows that arrive as `unknown` are exactly the set that
+`CameraRepository.get_random_without_frame()` selects. A later `scan check` would
+therefore point credential combinations at 224 third-party cameras that no
+declared range covers. The gate for that belongs to the check task, in Front 3,
+and it has to be in place before that subcommand runs against this database.

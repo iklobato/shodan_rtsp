@@ -112,10 +112,15 @@ subcommand skeleton with `scan nmap` and `scan shodan`.
 - **D-5 (T024)**: `migrations/env.py` reads `sqlalchemy.url` from the Alembic config when
   the caller set it, and falls back to `config.yaml` otherwise. Without that, the
   migration test could not point a throwaway database at the run.
-- **D-6 (FR-001, outside the task list)**: the live database carries a legacy `cam` table
+- **D-6 (FR-001, outside the task list)**: the live database carried a legacy `cam` table
   with 229 rows. `migrations/env.py` lists it in `LEGACY_TABLES`, so autogenerate never
-  proposes dropping it. Nothing was dropped or migrated. See the open question in the
-  front report.
+  proposes dropping it. Nothing was dropped. Resolved by revision
+  `0002_migrate_legacy_cam.py`, which the user asked for after Front 1: the 229 rows move
+  into `camera` and `camera_observation` under one `scan_run` whose `target_set` records
+  that they have no declared range, and `cam` stays as it is. The raw output is in section
+  5 of `docs/front-1-report.md`, together with the risk it leaves behind: the 224 rows
+  that arrive as `unknown` are what `get_random_without_frame()` selects, so the check
+  task needs its own target gate in Front 3 before `scan check` runs.
 
 ---
 
