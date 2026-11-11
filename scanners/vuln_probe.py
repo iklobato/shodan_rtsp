@@ -25,6 +25,11 @@ _CPE_PRODUCT_INDEX = 4
 _CPE_VERSION_INDEX = 5
 # NVD writes "any version" as * and "not applicable" as - in the version field.
 _UNBOUNDED_VERSION = ("", "*", "-")
+# NVD names a camera model's firmware CPE "<model>_firmware" and keeps the
+# vulnerable range there, while the hardware CPE of the same model is flagged
+# not vulnerable. Measured on CVE-2017-7921: 58 vulnerable ranges, all of them
+# on a hikvision:<model>_firmware product.
+_FIRMWARE_SUFFIX = "_firmware"
 _SEGMENT_SEPARATOR = re.compile(r"[._\-]")
 # Sort ranks that keep a mixed numeric/text version key totally ordered.
 _NUMERIC_SEGMENT = 0
@@ -72,6 +77,14 @@ class CpeName:
     vendor: str
     product: str
     version: str = ""
+
+    def as_firmware(self) -> "CpeName":
+        """The same device read as the firmware CPE NVD hangs the flaw on."""
+        return CpeName(
+            vendor=self.vendor,
+            product=f"{self.product}{_FIRMWARE_SUFFIX}",
+            version=self.version,
+        )
 
     @classmethod
     def parse(cls, criteria: str) -> "CpeName":
@@ -376,8 +389,23 @@ class VulnProbe:
         in the 2.3 layout, so only a 2.3 name is used directly.
         """
         if device.cpe.startswith(_CPE_PREFIX):
-            return CpeName.parse(device.cpe)
-        return self._named_pair(device) or self._mapped_pair(device)
+            return self._carried(CpeName.parse(device.cpe))
+        return self._carried(self._named_pair(device) or self._mapped_pair(device))
+
+    def _carried(self, identified: CpeName | None) -> CpeName | None:
+        """The pair the feed carries entries for, retried as firmware once.
+
+        NVD flags a camera's hardware CPE `vulnerable: false` and puts the
+        vulnerable range on the firmware CPE of the same model, so a pair that
+        names only the model finds nothing. The retry adds the one suffix NVD
+        uses; it does not widen the match, and a pair the feed carries in
+        neither form is returned unchanged so the run records the same reason
+        it did before.
+        """
+        if identified is None or self._feed.entries_for(identified):
+            return identified
+        firmware = identified.as_firmware()
+        return firmware if self._feed.entries_for(firmware) else identified
 
     def _named_pair(self, device: DeviceFingerprint) -> CpeName | None:
         """The pair brands.yaml already read off the device, if it named one."""

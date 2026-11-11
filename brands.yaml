@@ -5,16 +5,52 @@
 # The first brand whose patterns hit wins, so keep a specific pattern above a
 # loose one.
 #
-# `vendor` and `product` are what the camera is stored as. The pair must match
-# the CPE naming of the NVD feed (`cpe:2.3:<part>:<vendor>:<product>:...`),
-# because that pair is what selects the CVEs in the vuln mode. Correct a wrong
-# pair here rather than in code.
+# `vendor` and `product` are what the camera is stored as, and the pair is what
+# selects the CVEs in the vuln mode (`cpe:2.3:<part>:<vendor>:<product>:...`).
+# Correct a wrong pair here rather than in code.
+#
+# No camera brand has a product NVD knows: a camera CVE names the model, and its
+# vulnerable range sits on the model's firmware CPE (`<model>_firmware`, part
+# `o`), while the hardware CPE of the same model is flagged not vulnerable.
+# The probe retries a pair as `<product>_firmware` for that reason. So a brand
+# entry names the brand and is what the check mode uses, and a model entry names
+# one model and is what reaches a CVE. Check a pair before adding it, or the
+# CVEs you find belong to a different product:
+#
+#   curl -sG 'https://services.nvd.nist.gov/rest/json/cpes/2.0' \
+#     --data-urlencode 'cpeMatchString=cpe:2.3:o:<vendor>:<model>_firmware' \
+#     --data-urlencode 'resultsPerPage=1'
+#
+# Measured 2026-11-11: `hikvision:ip_camera` returns totalResults 0, so the
+# brand-level camera pairs below match no CVE at all and are kept for the
+# credential set only.
 #
 # `users`, `passwords` and `url_templates` are the brand credential set the
 # check mode tries before the generic wordlists (D22). A brand with none of the
 # three still gets identified; only the generic wordlists run for it.
 
 brands:
+  # The model a device reports, and the entry that reaches CVE-2017-7921. The
+  # credential set is repeated from the brand entry below because the entry that
+  # matched is the one the check mode reads the set from.
+  hikvision_ds_2cd2032:
+    match: ["DS-2CD2032"]
+    vendor: hikvision
+    product: ds-2cd2032-i
+    users: [admin]
+    passwords:
+      - admin
+      - "12345"
+      - "123456"
+      - "12345678"
+      - Password123
+      - Hik12345
+      - abc123
+      - 1q2w3e4r
+    url_templates:
+      - "rtsp://{0}:{1}@{2}:{3}/h264/ch1/main/av_stream"
+      - "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101"
+
   hikvision:
     match: ["Hikvision-IP", "Hikvision", "IpCamera$"]
     vendor: hikvision
