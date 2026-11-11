@@ -18,7 +18,6 @@ from scanners.face_recognizer import (
     KnownEmbedding,
 )
 from scanners.frames import FrameStore
-from scanners.proxy import TwoCaptchaProxy
 from scanners.rtsp_probe import RtspProbe, RtspTarget
 from scanners.task import Task
 
@@ -84,9 +83,7 @@ class FaceScanTask(Task):
     @property
     def _probe(self) -> RtspProbe:
         if self._deps.probe is None:
-            proxy_config = self._deps.config.proxy
-            proxy = TwoCaptchaProxy(proxy_config) if proxy_config.enabled else None
-            self._deps = replace(self._deps, probe=RtspProbe(proxy=proxy))
+            self._deps = replace(self._deps, probe=RtspProbe())
         return self._deps.probe
 
     @property

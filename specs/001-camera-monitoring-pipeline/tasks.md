@@ -97,7 +97,10 @@ subcommand skeleton with `scan nmap` and `scan shodan`.
   `config.yaml.example`. `scanners/proxy.py` is still imported by `scanners/task.py` and
   `scanners/rtsp_probe.py`, so removing the section now would leave a live code path
   reading a config field that no longer exists. The section goes with the proxy code, in
-  Front 2 (T027 to T029).
+  Front 2 (T027 to T029). **Closed in Front 2**: the section is gone from the model and
+  from `config.yaml.example`. The local `config.yaml` still carries it and is the
+  operator's to clean, because the file is git-ignored and holds credentials; pydantic
+  ignores the extra keys, so it loads either way. See `docs/front-2-report.md` section 5.
 - **D-2 (T018, T019)**: the revision directory is `migrations/`, not `alembic/`, set through
   `script_location` in `alembic.ini`. The path is the one the repository already uses for
   hand-written SQL, and it keeps the generated revisions out of the reach of the
@@ -133,22 +136,37 @@ docs, so the fronts that follow touch a smaller tree.
 
 ### Tests for User Story 5
 
-- [ ] T025 [P] [US5] Test that no credential value reaches any log line, at any level, in `tests/test_logging.py`
-- [ ] T026 [P] [US5] Test that the direct RTSP transport still works after the proxy removal, in `tests/test_rtsp_direct.py`
+- [x] T025 [P] [US5] Test that no credential value reaches any log line, at any level, in `tests/test_logging.py`
+- [x] T026 [P] [US5] Test that the direct RTSP transport still works after the proxy removal, in `tests/test_rtsp_direct.py`
 
 ### Implementation for User Story 5
 
-- [ ] T027 [US5] Delete `scanners/proxy.py` and `scanners/proxy_tunnel.py` (D11)
-- [ ] T028 [US5] Remove the proxy branch of the nmap check and the proxy config wiring in `scanners/task.py` and `scanners/config.py`
-- [ ] T029 [US5] Delete the proxy tests and remove `curl_cffi` from `pyproject.toml` and `uv.lock`
-- [ ] T030 [US5] Remove the credential log line at `scanners/rtsp_probe.py:146`
-- [ ] T031 [US5] Delete the unused `_sanitize_city` helper that mutates its input in `models/managers.py`
-- [ ] T032 [US5] Remove the unreachable low-priority branch and the dead `_LOW_PRIORITY_COUNT` class state in `scanners/task.py`
-- [ ] T033 [US5] Delete `_probe_names.py`, `docs/proxy-investigation.md`, `proxylist.txt` and `.serena/` (D23)
-- [ ] T034 [US5] Trim `docs/KNOWLEDGE.md` to a dated session log, moving current state to the README and to `docs/decisions/` (D36)
-- [ ] T035 [US5] Lab run: `uv run pytest -q` and `uv run ruff check .` before and after, with both outputs pasted into the front report
+- [x] T027 [US5] Delete `scanners/proxy.py` and `scanners/proxy_tunnel.py` (D11)
+- [x] T028 [US5] Remove the proxy branch of the nmap check and the proxy config wiring in `scanners/task.py` and `scanners/config.py`
+- [x] T029 [US5] Delete the proxy tests and remove `curl_cffi` from `pyproject.toml` and `uv.lock`
+- [x] T030 [US5] Remove the credential log line at `scanners/rtsp_probe.py:146`
+- [x] T031 [US5] Delete the unused `_sanitize_city` helper that mutates its input in `models/managers.py`
+- [x] T032 [US5] Remove the unreachable low-priority branch and the dead `_LOW_PRIORITY_COUNT` class state in `scanners/task.py`
+- [x] T033 [US5] Delete `_probe_names.py`, `docs/proxy-investigation.md`, `proxylist.txt` and `.serena/` (D23)
+- [x] T034 [US5] Trim `docs/KNOWLEDGE.md` to a dated session log, moving current state to the README and to `docs/decisions/` (D36)
+- [x] T035 [US5] Lab run: `uv run pytest -q` and `uv run ruff check .` before and after, with both outputs pasted into the front report
 
 **Checkpoint**: the suite passes with the retired tests gone, and no credential appears in a log.
+
+### Deviations recorded during Front 2
+
+- **D-7 (T030)**: the credential leak was three log lines, not the one T030 named. The test
+  of T025 found the DEBUG URL line and the DEBUG no-frame line; reading the file found the
+  INFO user/password line. All three now log the address and the port only, and the test
+  keeps a positive control so it fails for the right reason. `docs/front-2-report.md`
+  section 2.
+- **D-8 (T034)**: the current-state sections of `docs/KNOWLEDGE.md` went to `plan.md`,
+  `contracts/cli.md` and `docs/decisions/`, not to the README. The plan keeps the README
+  rewrite in Front 5 (T074), after the commands it documents exist, so moving text there now
+  would document commands that are not wired yet.
+- **D-9 (T027)**: `Transport` and `DirectTransport` stay, now with a single implementation.
+  Removing them is a refactor of the probe and not a deletion of the proxy, and the plan does
+  not retire them. Flagged in `docs/front-2-report.md` section 5.
 
 ---
 

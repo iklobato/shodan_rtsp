@@ -4,7 +4,6 @@ from argparse import ArgumentParser, Namespace
 from collections.abc import Callable
 
 from scanners.config import AppConfig, NmapConfig, ShodanConfig, load_config
-from scanners.proxy import TwoCaptchaProxy
 from scanners.task import NmapTask, ShodanTask, Task
 
 __version__ = "0.1.0"
@@ -18,7 +17,7 @@ class TaskFactory:
 
     def build_nmap(self, target: str | None) -> NmapTask:
         """The nmap task, over the target given or the configured range."""
-        return NmapTask(self._nmap_config(target), self._nmap_proxy())
+        return NmapTask(self._nmap_config(target))
 
     def build_shodan(self, query: str | None) -> ShodanTask:
         return ShodanTask(self._shodan_config(query))
@@ -32,18 +31,6 @@ class TaskFactory:
         if query is None:
             return self._config.shodan
         return self._config.shodan.model_copy(update={"query": query})
-
-    def _nmap_proxy(self) -> TwoCaptchaProxy | None:
-        """The configured proxy, or None when proxy.enabled is false (direct).
-
-        nmap --proxies cannot relay socks5, so this gives nmap an http proxy
-        regardless of the transport configured for the HTTP client.
-        """
-        if not self._config.proxy.enabled:
-            return None
-        http_only = self._config.proxy.model_copy(update={"protocol": "http"})
-        return TwoCaptchaProxy(http_only)
-
 
 class CommandLine:
     """Dispatches the parsed command line to the task it names (D34, D38)."""

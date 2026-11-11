@@ -14,7 +14,7 @@ checkers:
   wordlist_passwords: wordlists/passwords_small.txt
   wordlist_rtsp_urls: wordlists/rtsp_urls_small.txt
   randomize: true
-  concurrency: 1              # parallel RTSP probes; raise to speed up, bounded by the proxy exit
+  concurrency: 1              # parallel RTSP probes; raise to speed up, bounded by the cameras
 
 nmap:
   ip_range: 192.168.1.0/24    # your own lab or a written-authorized range
@@ -22,20 +22,6 @@ nmap:
   ports: [554, 80, 443, 8000, 8080, 8554, 34567]
   parallelism: 0             # > 0 runs nmap with -T4 --min-parallelism N; 0 = nmap defaults
   xml_path: logs/nmap.xml    # raw XML of the run; this is what --start_vuln_scan reads
-
-proxy:
-  # false = connect straight from the local IP. Required for a private range
-  # (192.168.x.x is unreachable through a residential exit) and for a local
-  # scan while the 2captcha account is down. Keep true for public scans.
-  enabled: true
-  token: "<your_2captcha_token>"
-  auth_mode: whitelist        # whitelist | login
-  protocol: socks5            # http | https | socks5
-  country: us
-  public_ip: ""               # whitelist mode; auto-detected when empty
-  gateway_host: ""            # login mode only
-  gateway_port: 0             # login mode only
-  gateway_password: ""        # login mode only
 
 vuln:
   # Names the CVEs that cover what an nmap or Shodan scan already collected.

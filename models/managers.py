@@ -34,7 +34,6 @@ class CameraRepository:
         second scan of the same endpoint has to find the row instead of adding a
         duplicate (FR-006).
         """
-        camera.city = self._sanitize_city(camera.city)
         with self._db.session_scope() as session:
             stored = self._find_in(session, camera.ip, camera.port)
             if stored is not None:
@@ -84,12 +83,6 @@ class CameraRepository:
             .filter(Camera.ip == ip, Camera.port == port)
             .one_or_none()
         )
-
-    @staticmethod
-    def _sanitize_city(city: str) -> str:
-        if not city:
-            return ""
-        return city.replace("'", "").replace('"', "").replace(";", "")
 
 
 class ScanRunRepository:

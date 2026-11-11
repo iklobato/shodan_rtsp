@@ -21,14 +21,9 @@ from models.managers import (
 )
 from models.scan_run import ScanKind, ScanRun
 from scanners.config import CheckersConfig, NmapConfig, ShodanConfig
-from scanners.proxy import TwoCaptchaProxy
 from scanners.rtsp_probe import RtspProbe, RtspTarget
 
 __version__ = "0.1.0"
-
-# nmap --proxies only relays through HTTP/SOCKS4 (see `nmap --help`); a socks5
-# proxy is rejected, so NmapTask must be given one of these.
-_NMAP_PROXY_SCHEMES = ("http", "socks4", "socks4a")
 
 # nmap's port state for a service that accepted the connection.
 _OPEN_STATE = "open"
@@ -36,10 +31,6 @@ _OPEN_STATE = "open"
 # Shodan's range filter. It is the only part of a query that names an address
 # range, so it is the only part the declared list can be checked against (D18).
 _NET_FILTER = "net:"
-
-
-class UnsupportedProxySchemeError(Exception):
-    """nmap cannot relay this proxy scheme, so the scan would run un-proxied."""
 
 
 class TargetOutsideScopeError(Exception):
@@ -101,14 +92,8 @@ class Task(ABC):
 class NmapTask(Task):
     """Scan a network range with nmap and store the hosts that answer on RTSP."""
 
-    def __init__(
-        self,
-        config: NmapConfig,
-        proxy: TwoCaptchaProxy = None,
-        database: Database = None,
-    ):
+    def __init__(self, config: NmapConfig, database: Database = None):
         super().__init__(config, database)
-        self.proxy = proxy
         self.scanner = nmap.PortScanner()
 
     def run(self) -> None:
@@ -157,7 +142,7 @@ class NmapTask(Task):
         return stored
 
     def _scan(self, target: str) -> Dict:
-        arguments = f"-p {self._ports_argument()} -sV{self._proxy_arguments()}"
+        arguments = f"-p {self._ports_argument()} -sV"
         if self.config.parallelism > 0:
             arguments += f" -T4 --min-parallelism {self.config.parallelism}"
         response = self.scanner.scan(hosts=target, arguments=arguments)
@@ -166,25 +151,6 @@ class NmapTask(Task):
     def _ports_argument(self) -> str:
         """The service scan port list of D15, as nmap wants it."""
         return ",".join(str(port) for port in self.config.ports)
-
-    def _proxy_arguments(self) -> str:
-        """`--proxies <url>`, or nothing when no proxy is configured.
-
-        No proxy is a deliberate direct scan (proxy.enabled: false). With one
-        set, a scheme nmap cannot relay raises instead of quietly dropping the
-        flag, so a public scan never runs un-proxied by accident.
-        """
-        if self.proxy is None:
-            return ""
-        proxy_url = self.proxy.url()
-        scheme = proxy_url.split("://", 1)[0].lower()
-        if scheme not in _NMAP_PROXY_SCHEMES:
-            raise UnsupportedProxySchemeError(
-                f"nmap --proxies supports {_NMAP_PROXY_SCHEMES}, got {scheme!r}; "
-                "give NmapTask an http proxy (TwoCaptchaSettings(protocol='http')). "
-                "Failing loud so the scan never silently runs un-proxied."
-            )
-        return f" --proxies {proxy_url}"
 
 
 class ShodanScope:
@@ -344,9 +310,6 @@ class ShodanTask(Task):
                         "Skipped %s:%d (blocked org/tag)", banner.ip_str, banner.port
                     )
                     continue
-                if category == "low":
-                    if not self._should_skip_low_priority():
-                        continue
                 camera = self.repository.get_or_create(
                     Camera(
                         ip=banner.ip_str,
@@ -369,14 +332,6 @@ class ShodanTask(Task):
             # A run left open reads as a scan still in flight, so the row is
             # closed even when the API call died halfway.
             self.runs.finish(run, cams_added)
-
-    _LOW_PRIORITY_COUNT: int = 0
-    _LOW_PRIORITY_LIMIT: int = 50
-
-    @classmethod
-    def _should_skip_low_priority(cls) -> bool:
-        cls._LOW_PRIORITY_COUNT += 1
-        return cls._LOW_PRIORITY_COUNT > cls._LOW_PRIORITY_LIMIT
 
     @classmethod
     def _classify_banner(cls, banner: ShodanBanner) -> str | None:

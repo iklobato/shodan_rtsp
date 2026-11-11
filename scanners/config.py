@@ -33,9 +33,8 @@ class CheckersConfig(BaseModel):
     wordlist_rtsp_urls: str
     randomize: bool = False
     # RTSP probes are I/O-bound (network + ffmpeg wait), so threads give near
-    # linear speedup. The real ceiling is the proxy exit, not the CPU: too many
-    # concurrent streams through one residential exit get throttled. 1 keeps the
-    # old sequential behaviour; raise it and watch the error rate.
+    # linear speedup. The ceiling is the lab and the cameras, not the CPU. 1
+    # keeps the old sequential behaviour; raise it and watch the error rate.
     concurrency: int = 1
 
 
@@ -50,22 +49,6 @@ class NmapConfig(BaseModel):
     # Where the run's raw XML lands. This is the file the vuln mode reads, so
     # keep it in step with VulnConfig.nmap_xml.
     xml_path: str = "logs/nmap.xml"
-
-
-class ProxyConfig(BaseModel):
-    # False routes every probe straight from the local IP: the only sane mode
-    # for a private range (192.168.x.x is unreachable through a residential
-    # exit) and for a box whose 2captcha account is down. Public scans must
-    # leave this True.
-    enabled: bool = True
-    token: str
-    auth_mode: str = "whitelist"  # 'whitelist' | 'login'
-    protocol: str = "http"  # http | https | socks5
-    country: str = "us"  # exit country code; BR is not offered by 2captcha
-    public_ip: str = ""  # whitelist mode; auto-detected when empty
-    gateway_host: str = ""  # login mode (from dashboard)
-    gateway_port: int = 0  # login mode (from dashboard)
-    gateway_password: str = ""  # login mode (from dashboard)
 
 
 class FaceConfig(BaseModel):
@@ -139,7 +122,6 @@ class AppConfig(BaseModel):
     shodan: ShodanConfig
     checkers: CheckersConfig
     nmap: NmapConfig
-    proxy: ProxyConfig
     face: FaceConfig = Field(default_factory=FaceConfig)
     vuln: VulnConfig = Field(default_factory=VulnConfig)
     frames: FramesConfig = Field(default_factory=FramesConfig)
@@ -158,7 +140,7 @@ def load_config(path: str = "config.yaml") -> AppConfig:
 def get_config() -> AppConfig:
     """The process-wide config from the default config.yaml, read once.
 
-    Used by the default factories (Database, TwoCaptchaProxy) when nothing is
-    injected; the composition root in main.py loads and injects explicitly.
+    Used by the default factories (Database) when nothing is injected; the
+    composition root in main.py loads and injects explicitly.
     """
     return load_config()
