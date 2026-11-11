@@ -4,6 +4,7 @@ This is the single config hub: config.ini and .env are retired. Secrets live in
 config.yaml (git-ignored); config.yaml.example is the committed template.
 """
 
+import os
 from functools import lru_cache
 
 import yaml
@@ -146,10 +147,21 @@ class AppConfig(BaseModel):
 
 
 def load_config(path: str = "config.yaml") -> AppConfig:
-    """Read and validate the config from a specific yaml file (fail fast)."""
+    """Read and validate the config from a specific yaml file (fail fast).
+
+    `DATABASE_HOST` overrides the `database.host` of the file when it is set. The
+    database address is the one value that differs between a run on the host
+    (localhost:5440) and a run in a container (postgres:5432), so it comes from
+    the environment instead of one config file per environment. Every other
+    value, the authorized ranges and the secrets included, stays in the file.
+    """
     with open(path) as config_file:
-        data = yaml.safe_load(config_file) or {}
-    return AppConfig.model_validate(data)
+        document = yaml.safe_load(config_file) or {}
+    host = os.environ.get("DATABASE_HOST")
+    if host and isinstance(document, dict):
+        database = {**(document.get("database") or {}), "host": host}
+        document = {**document, "database": database}
+    return AppConfig.model_validate(document)
 
 
 @lru_cache(maxsize=1)

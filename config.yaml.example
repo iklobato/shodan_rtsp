@@ -67,4 +67,7 @@ database:
   user: "<postgres_user>"
   password: "<postgres_password>"
   host: "localhost:5440"   # host[:port]; 5432 and 5433 are taken on this host
+  # A container reaches the database at another address, so DATABASE_HOST
+  # overrides this one value: host.docker.internal:5440 for `docker run`, or
+  # postgres:5432 inside the compose network (the scanner service sets it).
   db: "cameras"
