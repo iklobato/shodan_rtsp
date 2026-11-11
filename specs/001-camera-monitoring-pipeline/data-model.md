@@ -149,9 +149,10 @@ Constraints and indexes:
   attempt. `first_seen_at` keeps the history, so a repeated run does not add rows.
 - `CHECK (outcome = 'frame_obtained') = (frame_id IS NOT NULL)`: a frame is recorded
   exactly when one was obtained.
-- `CHECK (outcome = 'frame_obtained' OR failure_reason <> '')`: a candidate that yielded
-  no frame always carries the reason (D31). This is the constraint that makes silence
-  impossible.
+- `CHECK (outcome = 'frame_obtained' OR outcome = 'not_attempted' OR failure_reason <> '')`:
+  an attempt that yielded no frame always carries the reason (D31). This is the
+  constraint that makes silence impossible. `not_attempted` is exempt because it is the
+  state before any attempt ran: there is no failure to explain yet.
 - `INDEX (cve_id)`: counts how many cameras carry one CVE.
 - `INDEX (camera_id)`: lists the findings of one camera.
 
