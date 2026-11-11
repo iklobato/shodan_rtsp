@@ -15,6 +15,10 @@ redirects, and none of that needs a camera.
 `CveLab` is the last: the three CVE read modules assert the same handful of
 things about a run, so the reads of the database live here once and each module
 only points the lab at the port it wants read.
+
+The face fakes come with them: `Vectors` builds embeddings whose angles are
+exact, and `FakeDetector` hands the real recognizer the faces a test chose, so
+the metric, the threshold and the clustering are the code under test.
 """
 
 import threading
@@ -22,7 +26,9 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from math import cos, radians, sin
 from pathlib import Path
 
 import numpy as np
@@ -33,14 +39,25 @@ from sqlalchemy.pool import StaticPool
 
 from models.base import BASE
 from models.camera import Camera, CameraStatus
+from models.face import Face
 from models.finding import CveFinding, CveOutcome
-from models.frame import FaceFrame
-from models.managers import CameraRepository
+from models.frame import FaceFrame, FrameSource
+from models.managers import (
+    CameraRepository,
+    FaceFrameRepository,
+    FaceRepository,
+)
+from models.person import Person
 from models.scan_run import ScanRun
 from scanners import rtsp_probe
-from scanners.config import FramesConfig, TargetsConfig, VulnConfig
+from scanners.config import FaceConfig, FramesConfig, TargetsConfig, VulnConfig
 from scanners.cve import CVE_BATCH
 from scanners.cve.base import CveAttempt
+from scanners.face_recognizer import FaceRecognizer
+from scanners.face_task import FaceScanDeps, FaceScanTask
+from scanners.frames import FrameStore
+from scanners.reports import StdoutLines
+from scanners.rtsp_probe import RtspProbe
 from scanners.vuln_probe import CveMatch, DeviceFingerprint
 from scanners.vuln_task import CveDeps, CveTask
 
@@ -53,6 +70,29 @@ _QUERY_SEPARATOR = "?"
 _NOT_FOUND_STATUS = 404
 _ALLOWED_CIDR = "127.0.0.1/32"
 _READ_TIMEOUT_SECONDS = 5.0
+
+# The recognition model emits 512 values, so a test vector is that long too.
+_EMBEDDING_LENGTH = 512
+_FACE_BOX: tuple[int, int, int, int] = (10, 20, 60, 70)
+_DET_SCORE = 0.99
+
+# The lab of the face modules: one camera on a declared range, a URL template a
+# probe can open, and a frame big enough to encode to a real file.
+_LAB_IP = "10.0.0.1"
+_LAB_PORT = 554
+_LAB_USER = "admin"
+_LAB_PASSWORD = "lab"
+_LAB_URL = "rtsp://{}:{}@{}:{}/Streaming/Channels/1"
+_LAB_CIDR = "10.0.0.0/24"
+_LAB_THRESHOLD = 0.5
+# One frame per scan, so a captured run writes one file: two frames of one
+# camera inside the same second would collide on the frame file name.
+_LAB_FRAMES_PER_SCAN = 1
+_LAB_FRAME_INTERVAL = 0.0
+_FRAME_WIDTH = 640
+_FRAME_HEIGHT = 480
+_FRAME_CHANNELS = 3
+
 
 
 @dataclass(frozen=True)
@@ -239,6 +279,66 @@ def opened_frames(monkeypatch: pytest.MonkeyPatch) -> FakeCapture:
     return capture
 
 
+class Vectors:
+    """Embeddings a test can reason about: the angle between two of them is exact.
+
+    The recognition model emits 512 values, so a test vector is that long too,
+    with only the first two carrying the direction. The cosine between two of
+    them is the cosine of the difference of the angles they were built from.
+    """
+
+    @classmethod
+    def unit(cls, degrees: float) -> np.ndarray:
+        """A unit vector in the first plane, `degrees` from the first axis."""
+        angle = radians(degrees)
+        vector = np.zeros(_EMBEDDING_LENGTH, dtype=np.float32)
+        vector[0] = cos(angle)
+        vector[1] = sin(angle)
+        return vector
+
+    @classmethod
+    def scaled(cls, degrees: float, factor: float) -> np.ndarray:
+        """The same direction at a different length: what cosine ignores (D44)."""
+        return cls.unit(degrees) * factor
+
+
+class FakeFace:
+    """One face as the insightface app hands it back: a box, a vector, a score."""
+
+    def __init__(
+        self, bbox: np.ndarray, embedding: np.ndarray, det_score: float
+    ) -> None:
+        self.bbox = bbox
+        self.embedding = embedding
+        self.det_score = det_score
+
+    @classmethod
+    def of(cls, embedding: np.ndarray) -> "FakeFace":
+        """One detected face at the box this suite uses, with a high score."""
+        return cls(
+            np.array(_FACE_BOX, dtype=np.float32), embedding, _DET_SCORE
+        )
+
+
+class FakeDetector:
+    """Stands in for the insightface app: the faces of each frame, in order.
+
+    The real recognizer runs over these, so the matching, the threshold and the
+    clustering are the code under test; only the pixels are missing. A frame the
+    test did not describe raises IndexError, so a run that reads more frames than
+    the test set up fails loudly instead of passing on nothing.
+    """
+
+    def __init__(self, per_frame: list[list[FakeFace]]) -> None:
+        self.per_frame = per_frame
+        self.seen: list[np.ndarray] = []
+
+    def get(self, image: np.ndarray) -> list[FakeFace]:
+        """The faces of this frame, in the order the frames were read."""
+        self.seen.append(image)
+        return self.per_frame[len(self.seen) - 1]
+
+
 @dataclass(frozen=True)
 class CveLab:
     """A stored camera and the CVE run that reads it.
@@ -304,3 +404,138 @@ class CveLab:
     def last_run(self) -> ScanRun:
         with self.database.session_scope() as session:
             return session.query(ScanRun).order_by(ScanRun.id.desc()).first()
+
+
+class CapturedLines(StdoutLines):
+    """A writer that keeps the lines, so a report is asserted without stdout."""
+
+    def __init__(self) -> None:
+        self._lines: list[str] = []
+
+    def write(self, line: str) -> None:
+        """Keep the line instead of printing it."""
+        self._lines.append(line)
+
+    def all(self) -> list[str]:
+        """Every line written so far, in order."""
+        return list(self._lines)
+
+
+@dataclass(frozen=True)
+class FaceLab:
+    """A stored camera, the frames it holds, and the rows a face run writes.
+
+    The face scan, the clustering and the reports read the same four tables, so
+    the rows a test seeds and the rows it then asserts on are built here once.
+    """
+
+    database: MemoryDatabase
+    root: Path
+    camera: Camera
+
+    @classmethod
+    def at(cls, database: MemoryDatabase, root: Path) -> "FaceLab":
+        """One camera a frame exists for, with the URL a probe would open."""
+        camera = CameraRepository(database=database).get_or_create(
+            Camera(
+                ip=_LAB_IP,
+                port=_LAB_PORT,
+                user=_LAB_USER,
+                password=_LAB_PASSWORD,
+                url=_LAB_URL,
+                status=CameraStatus.stream_obtained,
+            )
+        )
+        return cls(database, root, camera)
+
+    def frame(self, moment: datetime, source: FrameSource = FrameSource.rtsp) -> int:
+        """Write one frame file, record the row that points at it, return its id."""
+        pixels = np.zeros(
+            (_FRAME_HEIGHT, _FRAME_WIDTH, _FRAME_CHANNELS), dtype=np.uint8
+        )
+        stored = FrameStore(str(self.root)).write(self.camera.id, source, pixels)
+        return self._frame_rows().record(
+            FaceFrame(
+                camera_id=self.camera.id,
+                path=stored.path,
+                source=source,
+                width=_FRAME_WIDTH,
+                height=_FRAME_HEIGHT,
+                captured_at=moment,
+            )
+        ).id
+
+    def face(
+        self, frame_id: int, embedding: np.ndarray, person_id: int | None = None
+    ) -> int:
+        """One stored face of a frame, in the person the test named or in none."""
+        top, left, bottom, right = _FACE_BOX
+        return self._face_rows().store(
+            Face(
+                frame_id=frame_id,
+                person_id=person_id,
+                embedding=embedding.tolist(),
+                bbox_top=top,
+                bbox_left=left,
+                bbox_bottom=bottom,
+                bbox_right=right,
+                confidence=_DET_SCORE,
+            )
+        )
+
+    def person(self, label: str | None = None) -> Person:
+        """A person row, as the clustering or a hand would have left it."""
+        person = Person(label=label)
+        with self.database.session_scope() as session:
+            session.add(person)
+        return person
+
+    def people(self) -> list[Person]:
+        with self.database.session_scope() as session:
+            return session.query(Person).order_by(Person.id).all()
+
+    def faces(self) -> list[Face]:
+        with self.database.session_scope() as session:
+            return session.query(Face).order_by(Face.id).all()
+
+    def frames(self) -> list[FaceFrame]:
+        with self.database.session_scope() as session:
+            return session.query(FaceFrame).order_by(FaceFrame.id).all()
+
+    def last_run(self) -> ScanRun:
+        with self.database.session_scope() as session:
+            return session.query(ScanRun).order_by(ScanRun.id.desc()).first()
+
+    def deps(
+        self, detector: FakeDetector, probe: RtspProbe | None = None
+    ) -> FaceScanDeps:
+        """What the face scan needs, with the detector the test chose."""
+        config = FaceConfig(
+            match_threshold=_LAB_THRESHOLD,
+            frames_per_scan=_LAB_FRAMES_PER_SCAN,
+            frame_interval=_LAB_FRAME_INTERVAL,
+        )
+        return FaceScanDeps(
+            config=config,
+            frames=FramesConfig(root_path=str(self.root)),
+            targets=TargetsConfig(allowed_cidrs=[_LAB_CIDR]),
+            probe=probe,
+            recognizer=FaceRecognizer(config, detector),
+            store=FrameStore(str(self.root)),
+        )
+
+    def scan(self, deps: FaceScanDeps) -> None:
+        """Run the face scan once over this camera."""
+        FaceScanTask(deps, database=self.database).run()
+
+    def _frame_rows(self) -> FaceFrameRepository:
+        return FaceFrameRepository(self.database)
+
+    def _face_rows(self) -> FaceRepository:
+        return FaceRepository(self.database)
+
+
+@pytest.fixture
+def face_lab(database: MemoryDatabase, tmp_path: Path) -> FaceLab:
+    """The camera of the face modules, with no frame and no face stored yet."""
+    return FaceLab.at(database, tmp_path)

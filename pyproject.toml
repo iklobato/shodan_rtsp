@@ -12,7 +12,7 @@ dependencies = [
     "pydantic==2.11.10",
     "pyyaml>=6",            # scanners/config.py imports yaml directly
     "numpy>=1.24,<2",       # opencv 4.8 wheels are built against numpy 1.x (ABI)
-    "insightface==0.7.3",   # face detection + 128-d embedding
+    "insightface==0.7.3",   # face detection + 512-d embedding (buffalo_l, D44)
     "onnxruntime==1.20.1",  # insightface backend
     "alembic>=1.20.1",
 ]

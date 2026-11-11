@@ -46,8 +46,11 @@ face:
   enabled: true               # set false to skip face scan
   frames_per_scan: 5          # frames per camera per scan
   frame_interval: 2.0         # seconds between frames
-  match_threshold: 0.5        # cosine distance below = same person
-  save_frames: true           # save face frames to DB
+  # Cosine similarity over the L2-normalized 512-d embedding: higher means more
+  # alike, 1.0 is the same direction. PLACEHOLDER until `measure threshold` runs
+  # over a labelled pair set (D16, D44, SC-010).
+  match_threshold: 0.5
+  pairs_path: lab/faces       # labelled pair set `measure threshold` reads by default
 
 frames:
   # Frames are files on disk and the database holds the path (D17). The layout

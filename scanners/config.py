@@ -69,18 +69,21 @@ class FaceConfig(BaseModel):
     """Face recognition settings for FaceScanTask."""
 
     enabled: bool = True
-    # How many frames to grab per camera per scan (0 = disable multi-frame, keep single)
+    # How many frames to grab per camera per scan, for a camera holding none.
+    # 0 grabs no frame at all, so the camera is never read.
     frames_per_scan: int = 5
     # Seconds between frames within a single scan
     frame_interval: float = 2.0
-    # Cosine distance threshold: below = same person
+    # Minimum cosine similarity for two faces to be the same person: cosine over
+    # the L2-normalized 512-d embedding, so 1.0 is the same direction and higher
+    # means more alike (D44, D45).
+    # PLACEHOLDER: not measured on this data. `measure threshold` derives it from
+    # a labelled pair set, and until that run happens this value is a guess (D16,
+    # FR-025, SC-010).
     match_threshold: float = 0.5
-    # Minimum faces per frame to count it (0 = any face counts)
-    min_faces_per_frame: int = 1
-    # Save full frame to face_frames table when face detected
-    save_frames: bool = True
-    # Max faces to store per camera (oldest removed first)
-    max_faces_per_camera: int = 1000
+    # The labelled pair set `measure threshold` reads when --pairs is not given:
+    # one directory per identity, two or more images each (D16).
+    pairs_path: str = "lab/faces"
 
 
 class VulnConfig(BaseModel):

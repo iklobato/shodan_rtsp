@@ -53,9 +53,16 @@ class FrameStore:
     def _relative_path(
         self, camera_id: int, source: FrameSource, captured_at: datetime
     ) -> Path:
-        # ponytail: the name resolves to the second, so two frames of one camera
-        # inside the same second would collide on UNIQUE (path). The run shape
-        # rules that out today (frames are frame_interval seconds apart, one scan
-        # per camera at a time). Add a counter suffix if that stops holding.
-        stamp = captured_at.strftime(_TIMESTAMP_FORMAT)
-        return Path(str(camera_id)) / f"{stamp}-{source.value}{_EXTENSION}"
+        # The name resolves to the second, and one run may capture several frames
+        # of one camera inside the same second (frame_interval can be 0), so a
+        # name already on disk is not free to reuse: the UNIQUE (path) constraint
+        # of the frame table refuses the second row. A counter keeps the plain
+        # name for the first frame of a second and only lengthens a repeat.
+        directory = Path(str(camera_id))
+        name = f"{captured_at.strftime(_TIMESTAMP_FORMAT)}-{source.value}"
+        relative = directory / f"{name}{_EXTENSION}"
+        suffix = 1
+        while (Path(self._root) / relative).exists():
+            relative = directory / f"{name}-{suffix}{_EXTENSION}"
+            suffix += 1
+        return relative
