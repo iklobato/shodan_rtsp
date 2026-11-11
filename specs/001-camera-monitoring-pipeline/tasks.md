@@ -53,8 +53,8 @@ target has to exist before the fronts that are verified against it.
 
 - [ ] T006 Start `mediamtx` and publish a looped stream: `ffmpeg -re -stream_loop -1 -i lab/face.mp4 -c copy -f rtsp rtsp://127.0.0.1:8554/cam1`. Blocks US1, US4
 - [ ] T007 [P] Supply the face pair set for the threshold measurement: several images of one person and several of others, with consenting people or a public dataset whose licence allows it. Blocks US4
-- [ ] T008 Install FEMU or FirmAE and emulate an old Hikvision build. Blocks US3 only, so it can run in parallel with US1 and US5
-- [ ] T009 Write the rig document under `docs/` with the raw output of `GET /onvif-http/snapshot?auth=YWRtaW46MTEK` against the emulated device, or the recorded reason it could not be made to answer (D42). If the fallback mock is used, the document must say so in the first line
+- [ ] T008 Install FEMU or FirmAE and emulate an old Hikvision build. Blocks US3 only, so it can run in parallel with US1 and US5 (not done: no QEMU on this host and no `/dev/kvm` on the Mac or in the Docker VM, measured in `docs/front-4-rig.md`; D42 names the fallback that was taken instead)
+- [x] T009 Write the rig document under `docs/` with the raw output of `GET /onvif-http/snapshot?auth=YWRtaW46MTEK` against the emulated device, or the recorded reason it could not be made to answer (D42). If the fallback mock is used, the document must say so in the first line
 
 **Checkpoint**: the RTSP stream answers, the face pairs are on disk, and the rig document states the state of the emulation.
 
@@ -230,25 +230,69 @@ outcome and the reason recorded either way.
 
 ### Tests for User Story 3
 
-- [ ] T047 [P] [US3] Test the finding invariants: a frame is recorded exactly when one was obtained, and a candidate without a frame always carries a reason, in `tests/test_cve_finding.py`
-- [ ] T048 [P] [US3] Test that a class yielding no frame falls through to the next class, in `tests/test_cve_class_order.py`
-- [ ] T049 [P] [US3] Test the read-only property: a fake transport records every request and the test asserts GET-only, no body, and at most one frame, in `tests/test_cve_read_only.py`
-- [ ] T050 [P] [US3] Test that a timeout on one step is recorded and does not hang the run, in `tests/test_cve_timeout.py`
-- [ ] T079 [P] [US3] Test that a successful ONVIF read records the model and the firmware on the camera, in `tests/test_onvif_info.py`
+- [x] T047 [P] [US3] Test the finding invariants: a frame is recorded exactly when one was obtained, and a candidate without a frame always carries a reason, in `tests/test_cve_finding.py`
+- [x] T048 [P] [US3] Test that a class yielding no frame falls through to the next class, in `tests/test_cve_class_order.py`
+- [x] T049 [P] [US3] Test the read-only property: the transport records every request and the test asserts the exact declared reads, the method set, and at most one frame, in `tests/test_cve_read_only.py` (deviation D-16: the reads are not GET-only, because R5 needs the form POST of the Selea read and the SOAP POST of the ONVIF read; the assertion is the five declared reads and no other)
+- [x] T050 [P] [US3] Test that a timeout on one step is recorded and does not hang the run, in `tests/test_cve_timeout.py`
+- [x] T079 [P] [US3] Test that a successful ONVIF read records the model and the firmware on the camera, in `tests/test_onvif_info.py`
 
 ### Implementation for User Story 3
 
-- [ ] T051 [US3] Define the class interface, the attempt result and the outcome enum in `scanners/cve/base.py`
-- [ ] T052 [P] [US3] Implement the authentication bypass module for CVE-2017-7921 in `scanners/cve/auth_bypass.py`
-- [ ] T053 [P] [US3] Implement the unauthenticated read module for CVE-2025-34022 and CVE-2016-15055 in `scanners/cve/unauth_read.py`
-- [ ] T054 [P] [US3] Implement the unauthenticated ONVIF module in `scanners/cve/unauth_onvif.py`, returning the model and the firmware alongside the frame (FR-019)
-- [ ] T055 [US3] Implement the on-disk frame layout of R8 in `scanners/frames.py`
-- [ ] T056 [US3] Make the CVE task read observations from the database, record findings, and write the model and the firmware of an ONVIF success onto the camera in `scanners/vuln_task.py` (D30, FR-019)
-- [ ] T057 [US3] Set every network step of an attempt to time out rather than hang in `scanners/cve/`
-- [ ] T058 [US3] Register `scan cve` in `main.py`, exiting 0 when the run completed without a frame
-- [ ] T059 [US3] Lab run: capture the device state, run `scan cve`, capture the device state again, and paste both plus the raw response into the front report
+- [x] T051 [US3] Define the class interface, the attempt result and the outcome enum in `scanners/cve/base.py`
+- [x] T052 [P] [US3] Implement the authentication bypass module for CVE-2017-7921 in `scanners/cve/auth_bypass.py`
+- [x] T053 [P] [US3] Implement the unauthenticated read module for CVE-2025-34022 and CVE-2016-15055 in `scanners/cve/unauth_read.py`
+- [x] T054 [P] [US3] Implement the unauthenticated ONVIF module in `scanners/cve/unauth_onvif.py`, returning the model and the firmware alongside the frame (FR-019)
+- [x] T055 [US3] Implement the on-disk frame layout of R8 in `scanners/frames.py`
+- [x] T056 [US3] Make the CVE task read observations from the database, record findings, and write the model and the firmware of an ONVIF success onto the camera in `scanners/vuln_task.py` (D30, FR-019)
+- [x] T057 [US3] Set every network step of an attempt to time out rather than hang in `scanners/cve/`
+- [x] T058 [US3] Register `scan cve` in `main.py`, exiting 0 when the run completed without a frame
+- [x] T059 [US3] Lab run: capture the device state, run `scan cve`, capture the device state again, and paste both plus the raw response into the front report
 
 **Checkpoint**: SC-004 holds: a frame is obtained and the device state before and after is identical.
+
+### Deviations recorded during Front 4
+
+- **D-16 (T049)**: the read-only test does not assert "GET-only, no body". Two of the four
+  classes of D9 must send a body: the Selea read is a form POST, and the ONVIF read is a SOAP
+  POST, both because R5's sources only publish those shapes. What the test asserts instead is
+  stronger and still read-only: the transport records every request, and the set of
+  (method, path) pairs equals the five declared reads and nothing else, with the methods
+  drawn from an enum that holds no write verb. `docs/front-4-report.md` section 2.
+- **D-17 (T049)**: the new test found that `HttpReadTransport` never worked. `_read` opened the
+  connection with `with self._connection(parts) as connection:`, and `http.client.HTTPConnection`
+  has no `__enter__`, so every real read raised `TypeError` before a byte left the process. The
+  loopback tests in `tests/test_cve_read_only.py` failed with
+  `TypeError: 'HTTPConnection' object does not support the context manager protocol`, which is
+  the failing test D24 asks for. The connection is now closed in a `finally`, so a read that
+  times out still closes its socket. `docs/front-4-report.md` section 3.
+- **D-18 (T057)**: the timeout is one number on the transport, not one per step.
+  `vuln.timeout_seconds` (8.0, the RTSP probe's `stimeout`) bounds the connect and the read of
+  every request of every class, because `http.client` applies the timeout to the socket rather
+  than to a phase. A device that accepts the connection and never answers is the case
+  `tests/test_cve_timeout.py` measures.
+- **D-19 (T059)**: the lab run found that the identity chain reached no CVE at all. A camera is
+  looked up by the `vendor` and `product` pair of `brands.yaml`, and every camera brand in that
+  file carries `product: ip_camera`, a name the NVD dictionary does not hold: the dictionary
+  answers `totalResults 0` for `cpe:2.3:h:hikvision:ip_camera` and 1 for
+  `cpe:2.3:h:hikvision:ds-2cd2032-i`. A camera CVE names a model, and its vulnerable range sits
+  on the model firmware CPE, part `o`, while the hardware CPE of that same model is flagged not
+  vulnerable: of the 116 cpeMatch entries of CVE-2017-7921, 58 are vulnerable and all 58 are on
+  a `hikvision:<model>_firmware` product. Two changes, both in this front: the probe retries a
+  pair as `<product>_firmware` once, and only when the pair itself found nothing, and
+  `brands.yaml` gained a model-level entry, which is the level a CVE can be reached from. Every
+  other brand pair still matches no CVE, and closing that is a model list per brand checked
+  against the NVD dictionary: data work, not code. `docs/front-4-report.md` section 4.
+- **D-20 (T059)**: two of the four classes of the batch can never be selected while the feed
+  carries no CPE for their CVE. `CVE-2016-15055` (JVC) and `CVE-2025-34022` (Selea) carry no
+  `configurations` in NVD, so `NvdRecordParser.parse` returns None and the record is dropped
+  before any device can be compared with it. They stay in the batch, because a feed that
+  carries a CPE for them selects them the same way as the other two.
+- **D-21 (T059)**: the suite was green while the front could not match anything, because the
+  feed in `tests/test_version_range.py` was written by hand with the product
+  `cpe:2.3:o:hikvision:ip_camera`, a name the NVD dictionary does not carry. The test agreed
+  with the code and not with the feed. The file now also carries the record shape a real camera
+  CVE has, and `samples/nvd_camera_sample.json` is the four real records of the batch, fetched
+  from the NVD API on 2026-11-11.
 
 ---
 
