@@ -53,7 +53,7 @@ Then, in `config.yaml`:
 - add `frames.root_path`, for example `logs/frames`
 - add `brands.signature_path: brands.yaml`
 - set `vuln.cpe_map_path` and `vuln.feed_path` as today
-- add `face.pairs_path: lab/faces`
+- add `face.pairs_path: logs/faces` (git-ignored: the set is photos of real people)
 - `face.match_threshold` is a minimum cosine similarity and is a placeholder until step 7
 
 `config.yaml` is git-ignored and holds the Shodan key. It stays out of git.
@@ -69,13 +69,21 @@ The first run creates every table. The second run changes nothing, which is SC-0
 
 ## 4. Stand up the lab target
 
-The RTSP side:
+The RTSP side. The repository ships no video file, so the stream is published from a still
+image on a loop: one with a face in it, because that is what `scan faces` reads. The path is
+whatever the camera URL carries, and `lab/mediamtx.yml` accepts every path, since `mediamtx`
+with no configuration file serves only paths that were declared:
 
 ```bash
-mediamtx &                                   # RTSP on 127.0.0.1:8554
-ffmpeg -re -stream_loop -1 -i lab/face.mp4 \
-  -c copy -f rtsp rtsp://127.0.0.1:8554/cam1
+mediamtx lab/mediamtx.yml &                  # RTSP on 127.0.0.1:8554
+ffmpeg -loop 1 -re -i logs/faces/friends/01.jpg \
+  -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+  -r 10 -c:v libx264 -pix_fmt yuv420p -g 10 -f rtsp -rtsp_transport tcp \
+  rtsp://127.0.0.1:8554/h264/ch1/main/av_stream
 ```
+
+Two details cost a run each: libx264 refuses an odd width or height, hence the `scale`, and
+`-stream_loop -1` does not loop an image input, so the image is looped with `-loop 1 -re`.
 
 The vulnerable side is the emulated firmware (front 6). Its acceptance is narrow: the
 emulated device answers `GET /onvif-http/snapshot?auth=YWRtaW46MTEK` with a JPEG. Paste the
@@ -108,7 +116,7 @@ uv run python main.py search --since 2026-11-11T00:00:00Z
 Do this before trusting any threshold value (D16, SC-010).
 
 1. Put the pairs in the lab directory: several images of one person, several of others.
-2. Run `uv run python main.py measure threshold --pairs lab/faces` and record the
+2. Run `uv run python main.py measure threshold --pairs logs/faces` and record the
    similarity of the same person against the similarity of different people.
 3. Pick the value that separates the two groups, and write it into
    `face.match_threshold`.

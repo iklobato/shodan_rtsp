@@ -25,6 +25,7 @@ standard library access log goes. Start it with `2> logs/mock_camera.log`.
 import argparse
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import cv2
@@ -62,6 +63,15 @@ class SyntheticImage:
         if not encoded_ok:
             raise ImageNotEncoded("cv2 could not encode the lab image")
         return encoded.tobytes()
+
+
+class ImageFile:
+    """The image the lab serves when the operator names one of their own."""
+
+    @classmethod
+    def read(cls, path: str) -> bytes:
+        """The bytes of that file, served verbatim on the snapshot path."""
+        return Path(path).read_bytes()
 
 
 class MockCamera(BaseHTTPRequestHandler):
@@ -115,12 +125,24 @@ class MockRig:
     def main(cls) -> None:
         arguments = cls._parsed()
         logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT)
-        CameraServer(arguments.port, SyntheticImage.encode()).serve_forever()
+        CameraServer(arguments.port, cls._image(arguments.image)).serve_forever()
+
+    @classmethod
+    def _image(cls, path: str | None) -> bytes:
+        """The file the operator named, or the synthetic frame when there is none."""
+        if path is None:
+            return SyntheticImage.encode()
+        return ImageFile.read(path)
 
     @classmethod
     def _parsed(cls) -> argparse.Namespace:
         parser = argparse.ArgumentParser(description="The Front 4 lab camera (a mock)")
         parser.add_argument("--port", type=int, default=_DEFAULT_PORT)
+        parser.add_argument(
+            "--image",
+            default=None,
+            help="JPEG to serve on the snapshot path; defaults to a synthetic frame",
+        )
         return parser.parse_args()
 
 

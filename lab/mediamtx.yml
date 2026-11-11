@@ -1,0 +1,9 @@
+---
+# The RTSP side of the lab, for `scan check` and the RTSP capture of
+# `scan faces`.
+#
+# mediamtx with no configuration file only serves paths that are declared, and
+# the path a camera URL carries is not known in advance, so every path is
+# accepted here. This is a loopback lab device: do not run it on a shared host.
+paths:
+  all_others:

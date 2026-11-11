@@ -91,8 +91,11 @@ person, merging people when one face matches two (FR-022, FR-023).
 | | |
 |---|---|
 | `--camera-id N` | optional. Restricts the run to one camera |
-| writes | `face_frame`, `face`, `person` |
+| writes | `scan_run`, `face_frame`, `face`, `person` |
 | network egress | the stored `camera.url` of each camera |
+
+A run is recorded like every other run: one `scan_run` of kind `faces`, closed when the run
+finishes (D-22).
 
 ### `report faces [--person-id N]`
 
@@ -106,6 +109,9 @@ person 4  faces 2   first seen 2026-11-11T10:20:00Z  last seen 2026-11-11T10:20:
   camera 192.0.2.11:80   frames 2  frame cve
 ```
 
+A person prints as `person <id>`, or as `person <id> (<label>)` when the row carries a label
+(D28).
+
 ### `search [--person-id N] [--camera-id N] [--since TS] [--until TS]`
 
 Answers who appeared, where and when (FR-027, D25). Reads only, from the database, with no
@@ -116,8 +122,10 @@ SQL written by hand.
 2026-11-11T10:20:00Z  person 4  camera 192.0.2.11:80   frame cve
 ```
 
-One line per appearance, oldest first. A person with no label prints as `person <id>`,
-never as a name, because nothing labels a person automatically (D28).
+One line per appearance, oldest first. A person prints as `person <id>`, or as
+`person <id> (<label>)` when the row carries a label (D28). Nothing labels a person
+automatically, so the id is the only name the pipeline itself can give one, and a label is
+what an operator put on the row.
 
 ### `measure threshold [--pairs PATH]`
 

@@ -51,8 +51,8 @@ Single project at the repository root: `main.py`, `models/`, `scanners/`, `tests
 **Purpose**: the lab rig. Every front is done only with a real run and raw output (D24), so the
 target has to exist before the fronts that are verified against it.
 
-- [ ] T006 Start `mediamtx` and publish a looped stream: `ffmpeg -re -stream_loop -1 -i lab/face.mp4 -c copy -f rtsp rtsp://127.0.0.1:8554/cam1`. Blocks US1, US4
-- [ ] T007 [P] Supply the face pair set for the threshold measurement: several images of one person and several of others, with consenting people or a public dataset whose licence allows it. Blocks US4
+- [x] T006 Start `mediamtx` and publish a looped stream. Blocks US1, US4. Done in Front 5 with the command `quickstart.md` step 4 now carries: `mediamtx lab/mediamtx.yml`, then `ffmpeg -loop 1 -re -i logs/faces/friends/01.jpg -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -r 10 -c:v libx264 -pix_fmt yuv420p -g 10 -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:8554/h264/ch1/main/av_stream`. The `lab/face.mp4` of the original text does not exist in the repository (D-30), and mediamtx with no config file serves only declared paths (D-29)
+- [x] T007 [P] Supply the face pair set for the threshold measurement. Blocks US4. Done in Front 5: two public sample images per identity under `logs/faces`, one cropped out of the insightface group photo and one from the scikit image samples, the second image of each identity being the first one resized and re-encoded (D-25, `docs/front-5-report.md` section 3)
 - [ ] T008 Install FEMU or FirmAE and emulate an old Hikvision build. Blocks US3 only, so it can run in parallel with US1 and US5 (not done: no QEMU on this host and no `/dev/kvm` on the Mac or in the Docker VM, measured in `docs/front-4-rig.md`; D42 names the fallback that was taken instead)
 - [x] T009 Write the rig document under `docs/` with the raw output of `GET /onvif-http/snapshot?auth=YWRtaW46MTEK` against the emulated device, or the recorded reason it could not be made to answer (D42). If the fallback mock is used, the document must say so in the first line
 
@@ -305,26 +305,72 @@ with the merge rule, and answer who appeared where and when.
 
 ### Tests for User Story 4
 
-- [ ] T060 [P] [US4] Test that matching uses cosine similarity over the normalized vector and rejects the Euclidean comparison, in `tests/test_face_metric.py`
-- [ ] T061 [P] [US4] Test that a new face creates a person and a repeat does not, in `tests/test_person_cluster.py`
-- [ ] T062 [P] [US4] Test the merge: a face matching two people leaves one person and re-points every face, in `tests/test_person_merge.py`
-- [ ] T063 [P] [US4] Test the output shape of `report faces` and `search`, in `tests/test_report_output.py`
-- [ ] T064 [P] [US4] Test that a person with no label prints as an id and never as a name, in `tests/test_person_anonymous.py`
+- [x] T060 [P] [US4] Test that matching uses cosine similarity over the normalized vector and rejects the Euclidean comparison, in `tests/test_face_metric.py`
+- [x] T061 [P] [US4] Test that a new face creates a person and a repeat does not, in `tests/test_person_cluster.py`
+- [x] T062 [P] [US4] Test the merge: a face matching two people leaves one person and re-points every face, in `tests/test_person_merge.py`
+- [x] T063 [P] [US4] Test the output shape of `report faces` and `search`, in `tests/test_report_output.py`
+- [x] T064 [P] [US4] Test that a person with no label prints as an id and never as a name, and that a label set on the row prints beside it, in `tests/test_person_anonymous.py`
 
 ### Implementation for User Story 4
 
-- [ ] T065 [US4] Fix the dimension and the metric in `scanners/face_recognizer.py`: 512-d, `normed_embedding`, cosine similarity (D44)
-- [ ] T066 [US4] Define `face.match_threshold` as a minimum cosine similarity and mark the current value a placeholder in `scanners/config.py` and `config.yaml.example` (D45)
-- [ ] T067 [US4] Implement the person entity, its repository and the merge in `models/person.py` and `models/managers.py`
-- [ ] T068 [US4] Cluster detected faces into people in `scanners/face_task.py`, with the `ponytail:` ceiling comment naming the pgvector upgrade path (R9)
-- [ ] T069 [US4] Store the frame as a file and its path in the database in `scanners/face_task.py` and `scanners/frames.py`
-- [ ] T070 [US4] Register `scan faces`, `report faces` and `search` in `main.py`
-- [ ] T071 [US4] Implement the monitoring query in `models/managers.py`, using the indexes of data-model.md and no SQL built from strings
-- [ ] T072 [US4] Implement `measure threshold` over the labelled pair set in `scanners/face_recognizer.py` and register it in `main.py` (D16)
-- [ ] T080 [P] [US4] Test the measurement: same identity pairs score above different identity pairs on a fixed set of embeddings, and an identity directory with one image exits 1, in `tests/test_threshold_measure.py`
-- [ ] T073 [US4] Lab run: the same face in two frames yields one person, and the `search` output is pasted into the front report
+- [x] T065 [US4] Fix the dimension and the metric in `scanners/face_recognizer.py`: 512-d, `normed_embedding`, cosine similarity (D44)
+- [x] T066 [US4] Define `face.match_threshold` as a minimum cosine similarity and mark the current value a placeholder in `scanners/config.py` and `config.yaml.example` (D45)
+- [x] T067 [US4] Implement the person entity, its repository and the merge in `models/person.py` and `models/managers.py`
+- [x] T068 [US4] Cluster detected faces into people in `scanners/face_task.py`, with the `ponytail:` ceiling comment naming the pgvector upgrade path (R9)
+- [x] T069 [US4] Store the frame as a file and its path in the database in `scanners/face_task.py` and `scanners/frames.py`
+- [x] T070 [US4] Register `scan faces`, `report faces` and `search` in `main.py`
+- [x] T071 [US4] Implement the monitoring query in `models/managers.py`, using the indexes of data-model.md and no SQL built from strings
+- [x] T072 [US4] Implement `measure threshold` over the labelled pair set in `scanners/face_recognizer.py` and register it in `main.py` (D16)
+- [x] T080 [P] [US4] Test the measurement: same identity pairs score above different identity pairs on a fixed set of embeddings, and an identity directory with one image exits 1, in `tests/test_threshold_measure.py`
+- [x] T073 [US4] Lab run: the same face in two frames yields one person, and the `search` output is pasted into the front report
 
 **Checkpoint**: SC-005 and SC-006 hold against the lab.
+
+### Deviations recorded during Front 5
+
+- **D-22 (T070)**: `scan faces` writes one `scan_run` of kind `faces` as well, which the
+  `writes` line of `contracts/cli.md` does not list. The run has to be recorded like every
+  other run, and `ScanKind` already had a `faces` member, so the contract line is the
+  incomplete one and not the code. `docs/front-5-report.md` section 9.
+- **D-23 (T070)**: `main.py` now carries the list of refusals it converts into exit 1
+  (`_REFUSALS`). `contracts/cli.md` fixes the three codes and names four cases; which
+  exceptions count as a refusal is an implementation choice, and it now lives in one place
+  instead of at each command. Anything outside the list keeps its traceback, because that is
+  a bug and not a value the operator can fix.
+- **D-24 (T073)**: `lab/mock_camera.py` gained `--image`, defaulting to the synthetic frame
+  it served before. The synthetic frame is flat grey and holds no face, so without a way to
+  serve a real photo the face path could not be run against the lab at all. The device is
+  still the mock of `docs/front-4-rig.md`, and the new option changes nothing about what it
+  proves.
+- **D-25 (T073)**: the labelled pair set lives under `logs/faces`, not under the `lab/faces`
+  of `quickstart.md` step 7. `lab/` is committed, and the set is photos of real people: two
+  public sample images, one cropped out of the group photo that ships with insightface and
+  one from the scikit image samples. `logs/` is git-ignored, so the set stays on the machine
+  that measured with it.
+- **D-26 (T066)**: three config keys were read by nothing and are deleted from
+  `scanners/config.py` and `config.yaml.example`: `min_faces_per_frame`,
+  `max_faces_per_camera` and `save_frames`. The second one also contradicted the unlimited
+  retention of D10, so keeping it would have been a rule the code does not follow.
+- **D-27 (T065)**: the `insightface` line of `pyproject.toml` said 128-d. The model emits 512
+  values, which is the dimension D44 fixes the metric on.
+- **D-28 (T060, T080)**: the frame file name gains a counter suffix when the plain name is
+  already on disk, and `scan faces` stores each frame as it is captured instead of collecting
+  all of them first. The lab proved the second resolution of the R8 name cannot hold two
+  frames of one second: the run died on `UNIQUE (path)` with one frame on disk and one open
+  `scan_run`, and every `captured_at` of a run carried the instant of the store instead of the
+  instant of the capture. The plain name stays the first name of a second, so the R8 layout
+  holds for the ordinary case. `docs/front-5-report.md` section 7.
+- **D-29 (T080)**: `lab/mediamtx.yml` added. `quickstart.md` step 4 started `mediamtx` with no
+  configuration file, and mediamtx then serves only the paths that were declared, which the
+  path of a camera URL never is.
+- **D-30 (T080)**: `quickstart.md` step 4 publishes a still image on a loop instead of the
+  `lab/face.mp4` it named, which the repository does not ship.
+- **D-31 (T063, T064)**: both reports print a person as `person <id> (<label>)` when the row
+  carries a label, and `contracts/cli.md` printed only `person <id>`. The label is data the
+  row holds, so a report that dropped it would print less than it read, and the column width
+  follows the widest cell it is about to print. Nothing in this batch writes `person.label`,
+  so the unlabelled form is still what the pipeline itself produces; the labelled run is in
+  `docs/front-5-report.md` section 5.
 
 ---
 
@@ -332,10 +378,26 @@ with the merge rule, and answer who appeared where and when.
 
 **Purpose**: the documentation and the gates that cover every front.
 
-- [ ] T074 [P] Rewrite `README.md` for the subcommands of `contracts/cli.md`, removing the proxy section (D34, D38)
-- [ ] T075 [P] Update `.specify/memory/constitution.md` and `docs/decisions/` if any front contradicted a recorded decision
-- [ ] T076 Run the whole gate: `uv run pytest -q`, `uv run ruff check .`, and the quickstart end to end, with the raw output pasted
-- [ ] T077 Confirm every front report carries a raw lab output, and that any unmeasured value is still labelled a placeholder (SC-009, SC-010)
+- [x] T074 [P] Rewrite `README.md` for the subcommands of `contracts/cli.md`, removing the proxy section (D34, D38)
+- [x] T075 [P] Update `.specify/memory/constitution.md` and `docs/decisions/` if any front contradicted a recorded decision
+- [x] T076 Run the whole gate: `uv run pytest -q`, `uv run ruff check .`, and the quickstart end to end, with the raw output pasted
+- [x] T077 Confirm every front report carries a raw lab output, and that any unmeasured value is still labelled a placeholder (SC-009, SC-010)
+
+T075: nothing to update. No front contradicted a decision. D-28 extends R8 of `research.md`,
+which is a finding and not a decision, and the frame-name layout is fixed by no decision
+(`D17` fixes only that the path lives in the database). `docs/decisions/` stands as written.
+
+T076: `141 passed in 8.96s` and `All checks passed!` on 2026-11-11, in the repository, with
+`.venv/bin/python -m pytest -q` and `.venv/bin/ruff check .`. The quickstart was not run end
+to end on this machine, and the reason is recorded in `docs/front-5-report.md` section 8: the
+lab database carries the 229 rows revision `0002` copied out of the legacy `cam` table, so
+every wide command is refused by the gate. Each step was run narrowed to a named camera
+instead, and the raw output of each is in the front report of the front that built it.
+
+T077: every front report carries raw lab output (`docs/front-1-report.md` to
+`docs/front-5-report.md`), and the one unmeasured value left in the code, `face.match_threshold`,
+is labelled a placeholder in `scanners/config.py`, in `config.yaml.example` and in section 3 of
+the Front 5 report (SC-010).
 
 ---
 
