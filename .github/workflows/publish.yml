@@ -22,7 +22,9 @@ jobs:
 
       # The suite runs here too, not only in ci.yml: a tag whose tests fail must
       # not reach the registry.
-      - uses: astral-sh/setup-uv@v10
+      # The exact version: setup-uv publishes no floating v10 tag, so `@v10`
+      # fails the run at the resolve step.
+      - uses: astral-sh/setup-uv@v10.3.3
       - run: uv sync --frozen
       - run: uv run ruff check .
       - run: uv run pytest -q
