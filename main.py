@@ -1,55 +1,67 @@
 import logging
 import os
-from argparse import ArgumentParser
+from argparse import ArgumentParser, Namespace
+from collections.abc import Callable
 
-from scanners.config import AppConfig, load_config
-from scanners.face_task import FaceScanTask
+from scanners.config import AppConfig, NmapConfig, ShodanConfig, load_config
 from scanners.proxy import TwoCaptchaProxy
-from scanners.rtsp_probe import RtspProbe
-from scanners.task import CheckTask, NmapTask, ShodanTask
-from scanners.vuln_task import VulnScanTask
+from scanners.task import NmapTask, ShodanTask, Task
 
 __version__ = "0.1.0"
 
 
-def parse_args():
+class TaskFactory:
+    """Builds the task of one registered command from the config."""
+
+    def __init__(self, config: AppConfig) -> None:
+        self._config = config
+
+    def build_nmap(self, target: str | None) -> NmapTask:
+        """The nmap task, over the target given or the configured range."""
+        return NmapTask(self._nmap_config(target), self._nmap_proxy())
+
+    def build_shodan(self, query: str | None) -> ShodanTask:
+        return ShodanTask(self._shodan_config(query))
+
+    def _nmap_config(self, target: str | None) -> NmapConfig:
+        if target is None:
+            return self._config.nmap
+        return self._config.nmap.model_copy(update={"ip_range": target})
+
+    def _shodan_config(self, query: str | None) -> ShodanConfig:
+        if query is None:
+            return self._config.shodan
+        return self._config.shodan.model_copy(update={"query": query})
+
+    def _nmap_proxy(self) -> TwoCaptchaProxy | None:
+        """The configured proxy, or None when proxy.enabled is false (direct).
+
+        nmap --proxies cannot relay socks5, so this gives nmap an http proxy
+        regardless of the transport configured for the HTTP client.
+        """
+        if not self._config.proxy.enabled:
+            return None
+        http_only = self._config.proxy.model_copy(update={"protocol": "http"})
+        return TwoCaptchaProxy(http_only)
+
+
+class CommandLine:
+    """Dispatches the parsed command line to the task it names (D34, D38)."""
+
+    def __init__(self, config: AppConfig) -> None:
+        self._config = config
+
+    def execute(self, arguments: Namespace) -> None:
+        """Run the task the command line asks for."""
+        self._scan_commands()[arguments.command](arguments.argument).run()
+
+    def _scan_commands(self) -> dict[str, Callable[[str | None], Task]]:
+        factory = TaskFactory(self._config)
+        return {"nmap": factory.build_nmap, "shodan": factory.build_shodan}
+
+
+def parse_args() -> Namespace:
     parser = ArgumentParser(description="Camera Scanner")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument(
-        "--start_search",
-        dest="mode",
-        action="store_const",
-        const="search",
-        help="Start searching for cameras on Shodan",
-    )
-    group.add_argument(
-        "--start_check",
-        dest="mode",
-        action="store_const",
-        const="check",
-        help="Start testing cameras on DB",
-    )
-    group.add_argument(
-        "--start_nmap",
-        dest="mode",
-        action="store_const",
-        const="nmap",
-        help="Start nmap scan",
-    )
-    group.add_argument(
-        "--start_face_scan",
-        dest="mode",
-        action="store_const",
-        const="face_scan",
-        help="Start face scan on active cameras",
-    )
-    group.add_argument(
-        "--start_vuln_scan",
-        dest="mode",
-        action="store_const",
-        const="vuln_scan",
-        help="Report the CVEs of the services in an nmap XML run",
-    )
     parser.add_argument(
         "--config",
         action="store",
@@ -58,6 +70,17 @@ def parse_args():
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose mode", default=False
+    )
+    groups = parser.add_subparsers(dest="group", required=True)
+    scan = groups.add_parser("scan", help="Scans that write to the database")
+    commands = scan.add_subparsers(dest="command", required=True)
+    commands.add_parser("nmap", help="Find cameras on a range with nmap").add_argument(
+        "argument", nargs="?", help="CIDR to scan; defaults to nmap.ip_range"
+    )
+    commands.add_parser(
+        "shodan", help="Find cameras through the Shodan API"
+    ).add_argument(
+        "argument", nargs="?", help="Shodan query; defaults to shodan.query"
     )
     return parser.parse_args()
 
@@ -74,58 +97,12 @@ def _configure_logging(verbose: bool) -> None:
     )
 
 
-class TaskFactory:
-    """Creates scanner task instances from config."""
-
-    def build_search(config: AppConfig) -> ShodanTask:
-        return ShodanTask(config.shodan)
-
-    def build_check(config: AppConfig) -> CheckTask:
-        proxy = TaskFactory._proxy(config)
-        return CheckTask(config.checkers, probe=RtspProbe(proxy=proxy))
-
-    def build_nmap(config: AppConfig) -> NmapTask:
-        # nmap --proxies cannot use socks5, so give it an http proxy regardless
-        # of the configured transport (which may be socks5 for the HTTP client).
-        proxy = TaskFactory._proxy(config, protocol_update={"protocol": "http"})
-        return NmapTask(config.nmap, proxy)
-
-    def _proxy(
-        config: AppConfig, protocol_update: dict = None
-    ) -> TwoCaptchaProxy | None:
-        """The configured proxy, or None when proxy.enabled is false (direct)."""
-        if not config.proxy.enabled:
-            return None
-        proxy_config = (
-            config.proxy.model_copy(update=protocol_update)
-            if protocol_update
-            else config.proxy
-        )
-        return TwoCaptchaProxy(proxy_config)
-
-    def build_face_scan(config: AppConfig) -> FaceScanTask:
-        return FaceScanTask.from_config(config)
-
-    def build_vuln_scan(config: AppConfig) -> VulnScanTask:
-        return VulnScanTask.from_config(config)
-
-
-_TASK_BUILDERS = {
-    "search": TaskFactory.build_search,
-    "check": TaskFactory.build_check,
-    "nmap": TaskFactory.build_nmap,
-    "face_scan": TaskFactory.build_face_scan,
-    "vuln_scan": TaskFactory.build_vuln_scan,
-}
-
-
 def main():
     args = parse_args()
     _configure_logging(args.verbose)
     if args.verbose:
         logging.info("Verbose mode enabled")
-    config = load_config(args.config)
-    _TASK_BUILDERS[args.mode](config).run()
+    CommandLine(load_config(args.config)).execute(args)
 
 
 if __name__ == "__main__":

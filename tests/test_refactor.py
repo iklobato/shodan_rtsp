@@ -6,15 +6,12 @@ Anything needing python-nmap / shodan is skipped when those are absent, so the
 suite runs without the scanning stack installed.
 """
 
-from contextlib import contextmanager
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from models.camera import Base, Camera
+from models.camera import Camera, CameraStatus
 from models.managers import CameraRepository
 from scanners.config import CheckersConfig, NmapConfig, ProxyConfig, load_config
 from scanners.proxy import (
@@ -32,6 +29,7 @@ from scanners.rtsp_probe import (
     RtspTarget,
     _rewrite_netloc,
 )
+from tests.conftest import MemoryDatabase
 
 
 def _proxy(cached_url="http://78.141.222.54:15000", **overrides):
@@ -320,7 +318,10 @@ def test_default_transport_selects_by_proxy():
 # --- tasks (need the scanning stack) -------------------------------------
 
 _RTSP_PORT = 554
+_SERVICE_PORTS = "554,80,443,8000,8080,8554,34567"
 _NMAP_XML_NAME = "nmap.xml"
+_LAB_RANGE = "10.0.0.0/30"
+_ONE_CAMERA = 1
 
 
 class _StubNmapScanner:
@@ -339,16 +340,6 @@ class _StubNmapScanner:
         return self._xml
 
 
-class _RecordingRepository:
-    """Fake CameraRepository that keeps what was inserted."""
-
-    def __init__(self) -> None:
-        self.stored: list[tuple[str, int]] = []
-
-    def insert_camera(self, camera: Camera) -> None:
-        self.stored.append((camera.ip, camera.port))
-
-
 def test_nmap_task_rejects_socks5_proxy():
     pytest.importorskip("nmap")
     from scanners.task import NmapTask, UnsupportedProxySchemeError
@@ -357,58 +348,82 @@ def test_nmap_task_rejects_socks5_proxy():
         def url(self):
             return "socks5://1.2.3.4:1080"
 
-    task = NmapTask(NmapConfig(ip_range="10.0.0.0/30"), _SocksProxy())
+    task = NmapTask(NmapConfig(ip_range=_LAB_RANGE), _SocksProxy())
     with pytest.raises(UnsupportedProxySchemeError, match="socks5"):
         task._scan("10.0.0.1")  # guard fires before any real scan runs
 
 
-def test_nmap_task_scans_direct_without_proxy(tmp_path: Path) -> None:
+def test_nmap_task_scans_direct_without_proxy(
+    tmp_path: Path, database: MemoryDatabase
+) -> None:
     """proxy.enabled false gives NmapTask no proxy: nmap must run un-proxied."""
     pytest.importorskip("nmap")
     from scanners.task import NmapTask
 
     scanner = _StubNmapScanner({})
     task = NmapTask(
-        NmapConfig(ip_range="10.0.0.0/30", xml_path=str(tmp_path / _NMAP_XML_NAME)),
+        NmapConfig(ip_range=_LAB_RANGE, xml_path=str(tmp_path / _NMAP_XML_NAME)),
         None,
+        database,
     )
     task.scanner = scanner
     task.run()
-    assert scanner.arguments == f"-p {_RTSP_PORT} -sV"
+    assert scanner.arguments == f"-p {_SERVICE_PORTS} -sV"
 
 
-def test_nmap_task_stores_open_ports_only(tmp_path: Path) -> None:
+def test_nmap_task_stores_open_ports_only(
+    tmp_path: Path, database: MemoryDatabase
+) -> None:
     """A live host with 554 closed must not land in the DB as a camera."""
     pytest.importorskip("nmap")
     from scanners.task import NmapTask
 
-    scanner = _StubNmapScanner(
+    config = NmapConfig(ip_range=_LAB_RANGE, xml_path=str(tmp_path / _NMAP_XML_NAME))
+    task = NmapTask(config, None, database)
+    task.scanner = _StubNmapScanner(
         {
             "10.0.0.1": {"tcp": {_RTSP_PORT: {"state": "closed"}}},
             "10.0.0.2": {"tcp": {_RTSP_PORT: {"state": "open"}}},
         }
     )
-    repository = _RecordingRepository()
-    task = NmapTask(
-        NmapConfig(ip_range="10.0.0.0/30", xml_path=str(tmp_path / _NMAP_XML_NAME)),
-        None,
-        repository,
-    )
-    task.scanner = scanner
     task.run()
-    assert repository.stored == [("10.0.0.2", _RTSP_PORT)]
+    with database.session_scope() as session:
+        stored = [(row.ip, row.port) for row in session.query(Camera).all()]
+    assert stored == [("10.0.0.2", _RTSP_PORT)]
 
 
-def test_nmap_task_keeps_the_run_xml(tmp_path: Path) -> None:
+def test_nmap_task_records_the_run_it_reached(
+    tmp_path: Path, database: MemoryDatabase
+) -> None:
+    """FR-002: the run keeps the range it was allowed to reach, and its result."""
+    pytest.importorskip("nmap")
+    from models.scan_run import ScanKind, ScanRun
+    from scanners.task import NmapTask
+
+    config = NmapConfig(ip_range=_LAB_RANGE, xml_path=str(tmp_path / _NMAP_XML_NAME))
+    task = NmapTask(config, None, database)
+    task.scanner = _StubNmapScanner(
+        {"10.0.0.2": {"tcp": {_RTSP_PORT: {"state": "open"}}}}
+    )
+    task.run()
+    with database.session_scope() as session:
+        run = session.query(ScanRun).one()
+        assert run.kind is ScanKind.nmap
+        assert run.target_set == _LAB_RANGE
+        assert run.camera_count == _ONE_CAMERA
+        assert run.finished_at is not None
+
+
+def test_nmap_task_keeps_the_run_xml(tmp_path: Path, database: MemoryDatabase) -> None:
     """The vuln mode reads this file, so the run must leave it on disk."""
     pytest.importorskip("nmap")
     from scanners.task import NmapTask
 
     xml = b'<nmaprun><host><address addr="10.0.0.2"/></host></nmaprun>'
     task = NmapTask(
-        NmapConfig(ip_range="10.0.0.0/30", xml_path=str(tmp_path / _NMAP_XML_NAME)),
+        NmapConfig(ip_range=_LAB_RANGE, xml_path=str(tmp_path / _NMAP_XML_NAME)),
         None,
-        _RecordingRepository(),
+        database,
     )
     task.scanner = _StubNmapScanner({}, xml=xml)
     task.run()
@@ -429,59 +444,82 @@ def test_shodan_banner_ignores_extra_and_coerces():
     assert banner.location.city == "SP"
 
 
+# --- the target gate (D18, FR-001) ----------------------------------------
+
+_DECLARED = "10.0.0.0/8"
+_INSIDE = "net:10.1.2.0/24 webcam"
+_OUTSIDE = "net:200.1.2.0/24 webcam"
+_NO_RANGE = "screenshot.label:webcam country:BR"
+_HOST_BITS = "net:10.0.0.5/24"
+_NOT_A_RANGE = "net:not-a-range"
+_NO_DECLARATION: tuple[str, ...] = ()
+
+
+@pytest.mark.parametrize(
+    "query,allowed",
+    [
+        (_OUTSIDE, [_DECLARED]),
+        (_NO_RANGE, [_DECLARED]),
+        (_INSIDE, _NO_DECLARATION),
+        (_HOST_BITS, [_DECLARED]),
+        (_NOT_A_RANGE, [_DECLARED]),
+    ],
+)
+def test_shodan_query_outside_the_declared_ranges_is_refused(
+    query: str, allowed: Sequence[str]
+) -> None:
+    """Every way of reaching past the declared list fails closed, before the API."""
+    pytest.importorskip("shodan")
+    from scanners.task import ShodanScope, TargetOutsideScopeError
+
+    with pytest.raises(TargetOutsideScopeError):
+        ShodanScope(allowed).require_inside(query)
+
+
+def test_shodan_query_inside_the_declared_range_passes() -> None:
+    pytest.importorskip("shodan")
+    from scanners.task import ShodanScope
+
+    ShodanScope([_DECLARED]).require_inside(_INSIDE)
+
+
 # --- repository (in-memory sqlite, no external DB) ------------------------
 
 
-class _MemoryDatabase:
-    """A Database stand-in backed by one shared in-memory sqlite connection."""
-
-    def __init__(self):
-        self.engine = create_engine(
-            "sqlite://",
-            connect_args={"check_same_thread": False},
-            poolclass=StaticPool,
-        )
-        Base.metadata.create_all(self.engine)
-        self._session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
-
-    @contextmanager
-    def session_scope(self):
-        session = self._session_factory()
-        try:
-            yield session
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
-
-
-def test_set_active_persists_credentials_into_columns():
-    repo = CameraRepository(database=_MemoryDatabase())
-    repo.insert_camera(Camera(ip="1.2.3.4", port=554))  # inactive, no creds yet
-
+def test_mark_stream_obtained_persists_credentials_into_columns(
+    database: MemoryDatabase,
+) -> None:
+    repo = CameraRepository(database=database)
+    repo.get_or_create(Camera(ip="1.2.3.4", port=_RTSP_PORT))
     found = Camera(
         ip="1.2.3.4",
-        port=554,
+        port=_RTSP_PORT,
         user="admin",
         password="1234",
         url="rtsp://admin:1234@1.2.3.4:554/live",
-        image_b64=b"jpg",
-        active=True,
+        status=CameraStatus.stream_obtained,
     )
-    assert repo.set_active(found) is True
-
-    active = repo.get_active()
-    assert len(active) == 1
-    stored = active[0]
+    assert repo.mark_stream_obtained(found) is True
+    stored = repo.get_with_frame()[0]
     assert (stored.user, stored.password) == ("admin", "1234")
     assert stored.url == "rtsp://admin:1234@1.2.3.4:554/live"
 
 
-def test_set_active_returns_false_for_unknown_camera():
-    repo = CameraRepository(database=_MemoryDatabase())
-    assert repo.set_active(Camera(ip="9.9.9.9", port=1)) is False
+def test_get_or_create_does_not_duplicate_the_camera(
+    database: MemoryDatabase,
+) -> None:
+    """A second scan of one endpoint finds the row instead of adding one."""
+    repo = CameraRepository(database=database)
+    first = repo.get_or_create(Camera(ip="1.2.3.4", port=_RTSP_PORT))
+    second = repo.get_or_create(Camera(ip="1.2.3.4", port=_RTSP_PORT))
+    assert second.id == first.id
+
+
+def test_mark_stream_obtained_returns_false_for_unknown_camera(
+    database: MemoryDatabase,
+) -> None:
+    repo = CameraRepository(database=database)
+    assert repo.mark_stream_obtained(Camera(ip="9.9.9.9", port=1)) is False
 
 
 # --- centralised config (single config.yaml) ------------------------------

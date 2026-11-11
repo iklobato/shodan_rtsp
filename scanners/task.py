@@ -2,7 +2,9 @@ import itertools
 import logging
 import random
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
+from ipaddress import IPv4Network
 from typing import Dict
 
 import nmap
@@ -11,7 +13,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from shodan import APIError
 
 from models.camera import Camera
-from models.managers import CameraRepository
+from models.database import Database, default_database
+from models.managers import (
+    CameraObservationRepository,
+    CameraRepository,
+    ScanRunRepository,
+)
+from models.scan_run import ScanKind, ScanRun
 from scanners.config import CheckersConfig, NmapConfig, ShodanConfig
 from scanners.proxy import TwoCaptchaProxy
 from scanners.rtsp_probe import RtspProbe, RtspTarget
@@ -25,9 +33,17 @@ _NMAP_PROXY_SCHEMES = ("http", "socks4", "socks4a")
 # nmap's port state for a service that accepted the connection.
 _OPEN_STATE = "open"
 
+# Shodan's range filter. It is the only part of a query that names an address
+# range, so it is the only part the declared list can be checked against (D18).
+_NET_FILTER = "net:"
+
 
 class UnsupportedProxySchemeError(Exception):
     """nmap cannot relay this proxy scheme, so the scan would run un-proxied."""
+
+
+class TargetOutsideScopeError(Exception):
+    """The scan asks for addresses that are not in the declared target list."""
 
 
 class _Location(BaseModel):
@@ -53,13 +69,29 @@ class ShodanBanner(BaseModel):
 
 
 class Task(ABC):
-    """Base task: holds a validated config model and a camera repository."""
+    """Base task: a validated config model and the database it writes through."""
 
-    def __init__(self, config: BaseModel, repository: CameraRepository = None):
+    def __init__(self, config: BaseModel, database: Database = None):
         if config is None:
             raise ValueError("Config is required")
         self.config = config
-        self.repository = repository or CameraRepository()
+        self.database = database
+
+    @property
+    def repository(self) -> CameraRepository:
+        """The camera table, on the database this task was given."""
+        return CameraRepository(self._database())
+
+    @property
+    def runs(self) -> ScanRunRepository:
+        return ScanRunRepository(self._database())
+
+    @property
+    def observations(self) -> CameraObservationRepository:
+        return CameraObservationRepository(self._database())
+
+    def _database(self) -> Database:
+        return self.database or default_database()
 
     @abstractmethod
     def run(self) -> None:
@@ -73,21 +105,24 @@ class NmapTask(Task):
         self,
         config: NmapConfig,
         proxy: TwoCaptchaProxy = None,
-        repository: CameraRepository = None,
+        database: Database = None,
     ):
-        super().__init__(config, repository)
+        super().__init__(config, database)
         self.proxy = proxy
         self.scanner = nmap.PortScanner()
 
     def run(self) -> None:
         logging.info(f"Starting nmap scanning on {self.config.ip_range}")
+        run = self.runs.start(ScanKind.nmap, self.config.ip_range)
 
         hosts = self._scan(self.config.ip_range)
         logging.info(f"Found {len(hosts)} hosts using nmap scan")
 
         self._write_xml()
+        cameras = 0
         for host, host_data in hosts.items():
-            self._store_open_ports(host, host_data)
+            cameras += self._store_open_ports(host, host_data, run)
+        self.runs.finish(run, cameras)
         logging.info("Executors: finished nmap scan")
 
     def _write_xml(self) -> None:
@@ -102,25 +137,35 @@ class NmapTask(Task):
             handle.write(self.scanner.get_nmap_last_output())
         logging.info(f"nmap XML written to {self.config.xml_path}")
 
-    def _store_open_ports(self, host: str, host_data: Dict) -> None:
-        """Store the host's open ports only.
+    def _store_open_ports(self, host: str, host_data: Dict, run: ScanRun) -> int:
+        """Store the host's open ports only, and say how many cameras that was.
 
         nmap reports every scanned port, closed and filtered included; only an
         open one is a camera, otherwise each live host lands in the DB as a
-        camera the check task then burns a full credential run on.
+        camera the check task then burns a full credential run on. Every sighting
+        is also snapshotted against the run, so the series keeps what the camera
+        looked like at this moment (FR-006).
         """
+        stored = 0
         for port, port_data in host_data.get("tcp", {}).items():
             if port_data["state"] != _OPEN_STATE:
                 continue
-            self.repository.insert_camera(Camera(ip=host, port=port))
+            camera = self.repository.get_or_create(Camera(ip=host, port=port))
+            self.observations.record(camera, run)
+            stored += 1
             logging.debug(f"Added on db {host}:{port}")
+        return stored
 
     def _scan(self, target: str) -> Dict:
-        arguments = f"-p 554 -sV{self._proxy_arguments()}"
+        arguments = f"-p {self._ports_argument()} -sV{self._proxy_arguments()}"
         if self.config.parallelism > 0:
             arguments += f" -T4 --min-parallelism {self.config.parallelism}"
         response = self.scanner.scan(hosts=target, arguments=arguments)
         return response.get("scan")
+
+    def _ports_argument(self) -> str:
+        """The service scan port list of D15, as nmap wants it."""
+        return ",".join(str(port) for port in self.config.ports)
 
     def _proxy_arguments(self) -> str:
         """`--proxies <url>`, or nothing when no proxy is configured.
@@ -140,6 +185,64 @@ class NmapTask(Task):
                 "Failing loud so the scan never silently runs un-proxied."
             )
         return f" --proxies {proxy_url}"
+
+
+class ShodanScope:
+    """The target gate of D18: what a Shodan query is allowed to reach.
+
+    Shodan's `net:` filter is the only part of a query that names an address
+    range, so it is the only part that can be checked before the API call.
+    Everything else in a query is a keyword, and Shodan gives no way to ask
+    whether a result set stays inside a range. A query with no `net:` filter
+    therefore reaches the whole index and fails closed: an empty declared list
+    authorizes nothing.
+    """
+
+    def __init__(self, allowed_cidrs: Sequence[str]) -> None:
+        self._allowed_cidrs = allowed_cidrs
+
+    def require_inside(self, query: str) -> None:
+        """Refuse the query unless every range it names is declared."""
+        networks = self._parse(self._net_tokens(query))
+        if not networks:
+            raise TargetOutsideScopeError(
+                "the query names no `net:` range, so it reaches the whole index; "
+                "declare the range the scan may reach in the query itself"
+            )
+        allowed = self._parse(self._allowed_cidrs)
+        for network in networks:
+            if not any(network.subnet_of(declared) for declared in allowed):
+                raise TargetOutsideScopeError(
+                    f"{network} is outside the declared ranges "
+                    f"{self._allowed_cidrs}; declare it in shodan.allowed_cidrs"
+                )
+
+    def _net_tokens(self, query: str) -> list[str]:
+        """The value of each `net:` filter of the query, as written."""
+        return [
+            token.removeprefix(_NET_FILTER)
+            for token in query.split()
+            if token.startswith(_NET_FILTER)
+        ]
+
+    def _parse(self, tokens: Sequence[str]) -> list[IPv4Network]:
+        """Each token as an IPv4 network, refusing anything that is not one.
+
+        IPv4Network turns down an IPv6 token too, which is what this pipeline
+        wants: every address in it (Shodan banner, nmap range, RTSP host) is
+        IPv4. strict=True so a token like 10.0.0.5/24 is refused instead of
+        being quietly widened to 10.0.0.0/24: a declared range must never cover
+        more than what was written.
+        """
+        ranges = []
+        for token in tokens:
+            try:
+                ranges.append(IPv4Network(token, strict=True))
+            except ValueError as unparsable:
+                raise TargetOutsideScopeError(
+                    f"address range does not parse: {token}"
+                ) from unparsable
+        return ranges
 
 
 class ShodanTask(Task):
@@ -222,6 +325,9 @@ class ShodanTask(Task):
     )
 
     def run(self) -> None:
+        scope = ShodanScope(self.config.allowed_cidrs)
+        scope.require_inside(self.config.query)
+        run = self.runs.start(ScanKind.shodan, self.config.query)
         api = shodan.Shodan(self.config.api_key)
         query = self.config.query
         logging.info("Updating database")
@@ -241,7 +347,7 @@ class ShodanTask(Task):
                 if category == "low":
                     if not self._should_skip_low_priority():
                         continue
-                self.repository.insert_camera(
+                camera = self.repository.get_or_create(
                     Camera(
                         ip=banner.ip_str,
                         port=banner.port,
@@ -251,6 +357,7 @@ class ShodanTask(Task):
                         region_code=banner.location.region_code,
                     )
                 )
+                self.observations.record(camera, run)
                 logging.debug(
                     "%s:%d added (priority=%s)", banner.ip_str, banner.port, category
                 )
@@ -258,6 +365,10 @@ class ShodanTask(Task):
             logging.info(f"{cams_added} cameras added")
         except APIError as e:
             logging.error(f"Shodan api error: {e}")
+        finally:
+            # A run left open reads as a scan still in flight, so the row is
+            # closed even when the API call died halfway.
+            self.runs.finish(run, cams_added)
 
     _LOW_PRIORITY_COUNT: int = 0
     _LOW_PRIORITY_LIMIT: int = 50
@@ -316,10 +427,10 @@ class CheckTask(Task):
     def __init__(
         self,
         config: CheckersConfig,
-        repository: CameraRepository = None,
+        database: Database = None,
         probe: RtspProbe = None,
     ):
-        super().__init__(config, repository)
+        super().__init__(config, database)
         self.probe = probe or RtspProbe()
 
     def run(self) -> None:
@@ -333,7 +444,7 @@ class CheckTask(Task):
             random.shuffle(passwords)
             random.shuffle(rtsp_urls)
 
-        cameras = self.repository.get_random_inactive()
+        cameras = self.repository.get_random_without_frame()
         logging.debug(f"Testing {len(cameras)} cameras")
 
         combinations = itertools.product(rtsp_urls, users, passwords, cameras)
@@ -353,7 +464,7 @@ class CheckTask(Task):
         with ThreadPoolExecutor(max_workers=self.config.concurrency) as pool:
             for found in pool.map(self.probe.probe, targets):
                 if found:
-                    self.repository.set_active(found)
+                    self.repository.mark_stream_obtained(found.camera)
         logging.info("Executors: finished testing cameras")
 
     @staticmethod

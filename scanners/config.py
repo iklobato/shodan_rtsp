@@ -11,11 +11,18 @@ from pydantic import BaseModel, Field
 
 _DEFAULT_QUERY = "screenshot.label:webcam,cam country:BR"
 _DEFAULT_MIN_CVSS = 0.0
+# RTSP plus the web and ONVIF ports most cameras expose instead of it, so a
+# camera that answers on no RTSP port is still found (D15).
+_DEFAULT_PORTS: tuple[int, ...] = (554, 80, 443, 8000, 8080, 8554, 34567)
 
 
 class ShodanConfig(BaseModel):
     api_key: str
     query: str = _DEFAULT_QUERY
+    # The ranges this scanner is allowed to reach (FR-001, D18). Every `net:`
+    # filter in the query must sit inside one of them, and a query that names no
+    # range at all is refused, so an empty list authorizes nothing.
+    allowed_cidrs: list[str] = Field(default_factory=list)
 
 
 class CheckersConfig(BaseModel):
@@ -34,6 +41,9 @@ class CheckersConfig(BaseModel):
 
 class NmapConfig(BaseModel):
     ip_range: str
+    # Ports every host in the range is scanned on. The list is one scan, not one
+    # scan per port: nmap takes them all in a single invocation.
+    ports: list[int] = Field(default_factory=lambda: list(_DEFAULT_PORTS))
     # nmap parallelises hosts itself; this tunes that. When > 0 the scan runs
     # with `-T4 --min-parallelism <N>`. 0 leaves nmap's own defaults untouched.
     parallelism: int = 0
@@ -96,6 +106,22 @@ class VulnConfig(BaseModel):
     report_path: str = "logs/vuln_report.json"
 
 
+class FramesConfig(BaseModel):
+    """Where captured frames land on disk.
+
+    The database holds the path, never the payload (D17), and the layout under
+    this root is the one in research R8.
+    """
+
+    root_path: str = "logs/frames"
+
+
+class BrandsConfig(BaseModel):
+    """The brand signature data file, so a new brand is a data line (D27)."""
+
+    signature_path: str = "brands.yaml"
+
+
 class DatabaseConfig(BaseModel):
     user: str
     password: str
@@ -116,6 +142,8 @@ class AppConfig(BaseModel):
     proxy: ProxyConfig
     face: FaceConfig = Field(default_factory=FaceConfig)
     vuln: VulnConfig = Field(default_factory=VulnConfig)
+    frames: FramesConfig = Field(default_factory=FramesConfig)
+    brands: BrandsConfig = Field(default_factory=BrandsConfig)
     database: DatabaseConfig
 
 
