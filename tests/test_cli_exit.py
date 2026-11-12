@@ -119,10 +119,10 @@ def test_a_photo_without_a_name_exits_two(
     assert Invocation.exit_code_of(monkeypatch, tmp_path, argv) == _ARGUMENT_EXIT
 
 
-def test_forget_with_a_search_option_exits_two(
+def test_forget_on_the_person_search_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D64: a removal carries no search, so the combination is a wrong line."""
+    """D76: removal moved to `target remove`, so the old flag names nothing."""
     config = Invocation.prepared(tmp_path)
     argv = (
         "main.py",
@@ -136,3 +136,20 @@ def test_forget_with_a_search_option_exits_two(
     )
 
     assert Invocation.exit_code_of(monkeypatch, tmp_path, argv) == _ARGUMENT_EXIT
+
+
+def test_a_config_after_the_command_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D71: the same run, with the option where it used to be rejected."""
+    config = Invocation.prepared(tmp_path)
+    argv = (
+        "main.py",
+        *_THRESHOLD_COMMAND,
+        "--pairs",
+        str(tmp_path / _MISSING_PAIRS),
+        "--config",
+        config,
+    )
+
+    assert Invocation.exit_code_of(monkeypatch, tmp_path, argv) == _FAILURE_EXIT

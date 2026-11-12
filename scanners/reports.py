@@ -26,13 +26,18 @@ from models.managers import (
     PersonTargetMatch,
     RankedAppearance,
     RemovedTarget,
+    TargetListReader,
+    TargetListing,
+    TargetRepository,
 )
+from models.target import Target
 from scanners.config import _DEFAULT_PERSON_MATCH_THRESHOLD
 from scanners.face_recognizer import ThresholdMeasurement
 from scanners.target_search import (
     TargetRegistration,
     TargetRemoval,
     TargetSearch,
+    TargetSelection,
 )
 
 _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -41,6 +46,7 @@ _SCORE_DECIMALS = 3
 _NO_PERSON = "no person stored"
 _NO_APPEARANCE = "no appearance stored"
 _NO_TARGET_HIT = "no appearance matched"
+_NO_TARGET = "no target registered"
 _FIRST_WIDTH = 1
 
 
@@ -354,21 +360,85 @@ class SearchPersonCommand:
         self._deps.live.run()
 
 
-class ForgetTargetCommand:
-    """`search person --forget`: removes the target and says what went (D64)."""
+@dataclass(frozen=True)
+class AddTargetDeps:
+    """What `target add` writes through: the registration, the table, the lines."""
 
-    def __init__(self, removal: TargetRemoval, lines: StdoutLines, target_id: int) -> None:
-        self._removal = removal
-        self._lines = lines
-        self._target_id = target_id
+    registration: TargetRegistration
+    targets: TargetRepository
+    lines: StdoutLines
+
+
+class AddTargetCommand:
+    """`target add`: registers the photos of one name, then says what it holds (D78)."""
+
+    def __init__(self, deps: AddTargetDeps, name: str, images: tuple[str, ...]) -> None:
+        self._deps = deps
+        self._name = name
+        self._images = images
 
     def render(self) -> None:
-        self._lines.write(self._removed_line(self._removal.remove(self._target_id)))
+        target = self._deps.registration.register(self._name, list(self._images))
+        self._deps.lines.write(self._added_line(target))
 
     run = render
 
-    def _removed_line(self, removed: RemovedTarget) -> str:
+    def _added_line(self, target: Target) -> str:
+        held = len(self._deps.targets.photos_of(target.id))
+        return f"target {target.id} ({target.name}): {held} reference photos"
+
+
+@dataclass(frozen=True)
+class RemoveTargetDeps:
+    """What `target remove` deletes through: the lookup, the removal, the lines."""
+
+    selection: TargetSelection
+    removal: TargetRemoval
+    lines: StdoutLines
+
+
+class RemoveTargetCommand:
+    """`target remove`: resolves the name or the id, then says what went (D76, D79)."""
+
+    def __init__(self, deps: RemoveTargetDeps, argument: str) -> None:
+        self._deps = deps
+        self._argument = argument
+
+    def render(self) -> None:
+        """The resolved id is what the removal takes, so a name needs no table."""
+        target_id = self._deps.selection.id_of(self._argument)
+        self._deps.lines.write(self._removed_line(self._deps.removal.remove(target_id)))
+
+    run = render
+
+    @classmethod
+    def _removed_line(cls, removed: RemovedTarget) -> str:
         return (
             f"removed target {removed.target_id} ({removed.name}): "
             f"{len(removed.photos)} photos, {removed.hits} hits"
+        )
+
+
+class TargetListingReport:
+    """`target list`: one line per registered target, none when there is none (D80)."""
+
+    def __init__(self, listings: TargetListReader, lines: StdoutLines) -> None:
+        self._listings = listings
+        self._lines = lines
+
+    def render(self) -> None:
+        rows = self._listings.rows()
+        if not rows:
+            self._lines.write(_NO_TARGET)
+            return
+        for row in rows:
+            self._lines.write(self._line(row))
+
+    run = render
+
+    @classmethod
+    def _line(cls, row: TargetListing) -> str:
+        return (
+            f"target {row.target_id}  {row.name}  "
+            f"{row.photos} reference photos  {row.hits} hits"
         )
