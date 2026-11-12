@@ -18,10 +18,11 @@ the faces into people, and answer who appeared, on which camera, and when.**
 
 </div>
 
-![One run: the gate refuses a query with no range, then the stored answer, then the timeline](docs/demo.gif)
+![One run: a frame read through a CVE class, the stored answer, then the timeline](docs/demo.gif)
 
 That recording is a real run of this machine on 2026-11-11, against the lab
-Postgres. Replay it with `asciinema play docs/demo.cast`, or read it as text with
+Postgres and the mock camera of `lab/mock_camera.py`. Every command in it exits
+0. Replay it with `asciinema play docs/demo.cast`, or read it as text with
 `asciinema cat docs/demo.cast`.
 
 > [!WARNING]
