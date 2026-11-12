@@ -14,8 +14,17 @@ from models.managers import (
     PersonCameraFrames,
     PersonReader,
     PersonSummary,
+    PersonTargetMatch,
+    RankedAppearance,
 )
-from scanners.reports import PersonReport, ReportDeps, SearchReport
+from scanners.config import _DEFAULT_PERSON_MATCH_THRESHOLD
+from scanners.reports import (
+    PersonReport,
+    ReportDeps,
+    SearchReport,
+    TargetRankingReport,
+    TargetThreshold,
+)
 from tests.conftest import CapturedLines, FaceLab, Vectors
 
 _FIRST_PERSON = 3
@@ -39,6 +48,15 @@ _LAST_STAMP = "2026-11-11T11:02:41Z"
 _NEAR_DEGREES = 12.0
 _SAME_FACE_DEGREES = 5.0
 _THREE_FACES = 3
+_TARGET_ID = 5
+_TARGET_NAME = "maria"
+_SCOPE = "in the stored history"
+_FRAME_PATH = "3/20261111T091402Z-rtsp-1.jpg"
+_BEST_SCORE = 0.912
+_WORSE_SCORE = 0.701
+_MEASURED_THRESHOLD = 0.62
+# The value the search ships with, which the report calls a placeholder (D60).
+_SHIPPED_THRESHOLD = _DEFAULT_PERSON_MATCH_THRESHOLD
 
 class Stored:
     """The rows a report prints, built the way the reader hands them over."""
@@ -238,3 +256,100 @@ def test_the_reports_read_the_rows_the_scan_stored(face_lab: FaceLab) -> None:
         f"{_FIRST_STAMP}  person {person_id}  camera {_LAB_ADDRESS}  frame rtsp",
         f"{_LAST_STAMP}  person {person_id}  camera {_LAB_ADDRESS}  frame cve",
     )
+
+
+class RankedStored:
+    """The lines `search person` prints, built the way the search hands them over."""
+
+    @classmethod
+    def one(cls, score: float) -> RankedAppearance:
+        return RankedAppearance(
+            score=score,
+            target_id=_TARGET_ID,
+            target_name=_TARGET_NAME,
+            person_id=_FIRST_PERSON,
+            label=None,
+            captured_at=_FIRST_MOMENT,
+            ip=_FIRST_CAMERA_IP,
+            port=_FIRST_CAMERA_PORT,
+            path=_FRAME_PATH,
+        )
+
+
+def test_the_ranking_prints_score_target_person_and_frame() -> None:
+    lines = CapturedLines()
+    report = TargetRankingReport(
+        lines, TargetThreshold(_MEASURED_THRESHOLD), _SCOPE
+    )
+
+    report.render([RankedStored.one(_BEST_SCORE), RankedStored.one(_WORSE_SCORE)])
+
+    assert tuple(lines.all()) == (
+        f"score 0.912  target {_TARGET_NAME}  person {_FIRST_PERSON}  "
+        f"camera {_FIRST_CAMERA_IP}:{_FIRST_CAMERA_PORT}  "
+        f"{_FIRST_STAMP}  frame {_FRAME_PATH}",
+        f"score 0.701  target {_TARGET_NAME}  person {_FIRST_PERSON}  "
+        f"camera {_FIRST_CAMERA_IP}:{_FIRST_CAMERA_PORT}  "
+        f"{_FIRST_STAMP}  frame {_FRAME_PATH}",
+    )
+
+
+def test_the_ranking_prints_a_label_when_the_person_carries_one() -> None:
+    lines = CapturedLines()
+    report = TargetRankingReport(lines, TargetThreshold(_MEASURED_THRESHOLD), _SCOPE)
+    labelled = RankedAppearance(
+        score=_BEST_SCORE,
+        target_id=_TARGET_ID,
+        target_name=_TARGET_NAME,
+        person_id=_FIRST_PERSON,
+        label=_TARGET_NAME,
+        captured_at=_FIRST_MOMENT,
+        ip=_FIRST_CAMERA_IP,
+        port=_FIRST_CAMERA_PORT,
+        path=_FRAME_PATH,
+    )
+
+    report.render([labelled])
+
+    assert f"person {_FIRST_PERSON} ({_TARGET_NAME})" in lines.all()[0]
+
+
+def test_the_ranking_says_so_when_nothing_matched() -> None:
+    """D60: the refused threshold is printed beside the word placeholder."""
+    lines = CapturedLines()
+
+    TargetRankingReport(lines, TargetThreshold(_SHIPPED_THRESHOLD), _SCOPE).render([])
+
+    assert tuple(lines.all()) == (
+        f"no appearance matched {_SCOPE} (threshold 0.5 PLACEHOLDER)",
+    )
+
+
+def test_a_measured_threshold_prints_plain() -> None:
+    lines = CapturedLines()
+
+    TargetRankingReport(lines, TargetThreshold(_MEASURED_THRESHOLD), _SCOPE).render([])
+
+    assert tuple(lines.all()) == (
+        f"no appearance matched {_SCOPE} (threshold {_MEASURED_THRESHOLD})",
+    )
+
+
+def test_report_faces_prints_the_target_of_each_person() -> None:
+    """D59: a person who matched a target says so under their own block."""
+    lines = CapturedLines()
+    deps = ReportDeps(
+        people=StubReader([Stored.first_person()], []),
+        lines=lines,
+        targets={
+            _FIRST_PERSON: [
+                PersonTargetMatch(
+                    target_id=_TARGET_ID, name=_TARGET_NAME, score=_BEST_SCORE
+                )
+            ]
+        },
+    )
+
+    PersonReport(deps).run()
+
+    assert lines.all()[-1] == f"  target {_TARGET_NAME}  score 0.912"

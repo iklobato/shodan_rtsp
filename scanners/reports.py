@@ -13,7 +13,7 @@ format, and the format is the one `contracts/cli.md` prints.
 
 import sys
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Protocol
 
@@ -23,13 +23,24 @@ from models.managers import (
     PersonCameraFrames,
     PersonReader,
     PersonSummary,
+    PersonTargetMatch,
+    RankedAppearance,
+    RemovedTarget,
 )
+from scanners.config import _DEFAULT_PERSON_MATCH_THRESHOLD
 from scanners.face_recognizer import ThresholdMeasurement
+from scanners.target_search import (
+    TargetRegistration,
+    TargetRemoval,
+    TargetSearch,
+)
 
 _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 _UTC = timezone.utc
+_SCORE_DECIMALS = 3
 _NO_PERSON = "no person stored"
 _NO_APPEARANCE = "no appearance stored"
+_NO_TARGET_HIT = "no appearance matched"
 _FIRST_WIDTH = 1
 
 
@@ -152,6 +163,7 @@ class ReportDeps:
     people: PersonReader
     lines: StdoutLines
     filters: AppearanceFilters = AppearanceFilters()
+    targets: dict[int, list[PersonTargetMatch]] = field(default_factory=dict)
 
 
 class PersonReport:
@@ -171,6 +183,8 @@ class PersonReport:
             self._deps.lines.write(self._headline(summary, widths))
             for camera in summary.cameras:
                 self._deps.lines.write(self._camera_line(camera, widths))
+            for match in self._deps.targets.get(summary.person_id, []):
+                self._deps.lines.write(self._target_line(match))
 
     # The command line calls run() on whatever a group hands back; the mode's own
     # name says what this report does where "run" does not.
@@ -194,6 +208,10 @@ class PersonReport:
             f"  camera {address:<{widths.address}}  "
             f"frames {camera.faces}  frame {paths}"
         )
+
+    def _target_line(self, match: PersonTargetMatch) -> str:
+        """One target this person matched, with the best score of the match."""
+        return f"  target {match.name}  score {match.score:.{_SCORE_DECIMALS}f}"
 
 
 class SearchReport:
@@ -237,3 +255,120 @@ class ThresholdReport:
             self._lines.write(line)
 
     run = render
+
+
+@dataclass(frozen=True)
+class TargetThreshold:
+    """The verification threshold, and whether it is still the shipped guess.
+
+    The shipped value is a placeholder (D60): the search says so beside the
+    number instead of printing a certainty the data does not carry. A value
+    measured by `measure threshold` and written into the config prints plain.
+    """
+
+    value: float
+
+    @property
+    def is_placeholder(self) -> bool:
+        return self.value == _DEFAULT_PERSON_MATCH_THRESHOLD
+
+    def described(self) -> str:
+        if self.is_placeholder:
+            return f"{self.value} PLACEHOLDER"
+        return f"{self.value}"
+
+
+class TargetRankingReport:
+    """`search person`: one line per appearance, best score first (D50)."""
+
+    def __init__(
+        self, lines: StdoutLines, threshold: TargetThreshold, scope: str
+    ) -> None:
+        self._lines = lines
+        self._threshold = threshold
+        self._scope = scope
+
+    def render(self, ranked: list[RankedAppearance]) -> None:
+        """The ranking, or the one line that says nothing matched."""
+        if not ranked:
+            self._lines.write(
+                f"{_NO_TARGET_HIT} {self._scope} "
+                f"(threshold {self._threshold.described()})"
+            )
+            return
+        for appearance in ranked:
+            self._lines.write(self._line(appearance))
+
+    def _line(self, appearance: RankedAppearance) -> str:
+        address = f"{appearance.ip}:{appearance.port}"
+        cell = PersonCell.of(appearance.person_id, appearance.label)
+        return (
+            f"score {appearance.score:.{_SCORE_DECIMALS}f}  "
+            f"target {appearance.target_name}  "
+            f"{cell}  "
+            f"camera {address}  "
+            f"{Stamp.of(appearance.captured_at)}  frame {appearance.path}"
+        )
+
+
+@dataclass(frozen=True)
+class SearchPersonDeps:
+    """What `search person` needs: the registration, the search, the report."""
+
+    registration: TargetRegistration
+    search: TargetSearch
+    report: TargetRankingReport
+    name: str
+    images: tuple[str, ...] = ()
+    live: Runnable | None = None
+
+
+class SearchPersonCommand:
+    """Registers the photos given, then ranks the stored faces (D52)."""
+
+    def __init__(self, deps: SearchPersonDeps) -> None:
+        self._deps = deps
+
+    def render(self) -> None:
+        """The registration and the live scan first, so this run is searched too.
+
+        Without `--live` the live scan is None and no camera is contacted; with
+        it, the scan runs through the face scan path and its own reach gate
+        before a single stored face is compared (D61).
+        """
+        self._register()
+        self._scan_live()
+        self._deps.report.render(self._deps.search.matches())
+
+    run = render
+
+    def _register(self) -> None:
+        """Nothing to register without a photo: a target id is looked up instead."""
+        if not self._deps.images:
+            return
+        self._deps.registration.register(self._deps.name, list(self._deps.images))
+
+    def _scan_live(self) -> None:
+        if self._deps.live is None:
+            return
+        self._deps.live.run()
+
+
+class ForgetTargetCommand:
+    """`search person --forget`: removes the target and says what went (D64)."""
+
+    def __init__(self, removal: TargetRemoval, lines: StdoutLines, target_id: int) -> None:
+        self._removal = removal
+        self._lines = lines
+        self._target_id = target_id
+
+    def render(self) -> None:
+        self._lines.write(self._removed_line(self._removal.remove(self._target_id)))
+
+    run = render
+
+    def _removed_line(self, removed: RemovedTarget) -> str:
+        return (
+            f"removed target {removed.target_id} ({removed.name}): "
+            f"{len(removed.photos)} photos, {removed.hits} hits"
+        )
