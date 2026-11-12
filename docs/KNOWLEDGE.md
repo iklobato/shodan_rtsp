@@ -2,11 +2,14 @@
 
 Dated record of what each working session found and changed, with the raw output that
 proved it. **An agent starting here reads the newest dated section first: it carries the
-current state, the open work, the traps and what needs watching.** The architecture, the file
-map and the command line are in `specs/001-camera-monitoring-pipeline/plan.md` and
+current state, the open work, the traps and what needs watching.** For the pipeline batch
+the architecture, the file map and the command line are in
+`specs/001-camera-monitoring-pipeline/plan.md` and
 `specs/001-camera-monitoring-pipeline/contracts/cli.md`, the settled choices in
-`docs/decisions/2026-11-11-shodan-rtsp-prod-ready.md` (D36), and the raw lab evidence of each
-front in `docs/front-<n>-report.md`.
+`docs/decisions/2026-11-11-shodan-rtsp-prod-ready.md` (D36), and the raw lab evidence of
+each front in `docs/front-<n>-report.md`. The named person search is the batch on top of
+them: `specs/002-person-search/` and `docs/decisions/2026-11-12-busca-pessoa-especifica.md`
+(D47 to D67).
 
 ## 2026-11-01/02: brand detection, face recognition, first LAN sweep
 
@@ -599,5 +602,192 @@ Each one was green on this Mac and red on a clean runner. All four are fixed.
   release; a hand-pushed tag is how they stop matching.
 - **`main` against a direct push.** `enforce_admins: false` means an admin push is possible, so
   nothing but the habit of using a branch stops a commit that skips the review rule.
+
+## 2026-11-12: the named person search, `search person`
+
+Branch `002-person-search`, three commits, [PR #13](https://github.com/iklobato/shodan_rtsp/pull/13),
+not merged yet. Built from six grill rounds recorded as D47 to D67 in
+`docs/decisions/2026-11-12-busca-pessoa-especifica.md`. Spec, plan, research R1 to R9, data
+model, contract and quickstart live in `specs/002-person-search/`.
+
+### What was built
+
+| Piece | What it is |
+|-------|------------|
+| `models/target.py` | `Target` (unique trimmed name, timestamps, `InvalidEntity` on an empty name), `TargetPhoto` (path unique, 512-value embedding, `array_length` check on Postgres only), `TargetHit` (one row per target and face, score range check, indexes on `(target_id, score)` and `face_id`) |
+| `migrations/versions/0003_person_search.py` | Creates the three tables with named constraints and indexes; downgrade drops hits, then photos, then targets, and touches no other table |
+| `models/managers.py` | `TargetRepository` (`resolve`, `add_photo`, `photos_of`, `all`, `remove` in one transaction), `TargetHitRepository` (`record` raises the score of an existing hit and never lowers it), `TargetReader` (`faces(filters)` over face, frame, person and camera; `matches_of(person_id)` best score per target per person), `PersonRepository.name_if_empty` and `release_label` |
+| `scanners/target_search.py` | `ReferencePhotoReader` (refuses zero and more than one face, refuses an unreadable file), `TargetRegistration` (reads every photo before writing anything, then copies the file and adds the row), `TargetComparison.best_of`, `TargetSearch` (filters, compares, writes hits, names the person), `TargetRemoval` (rows, then files, then labels) |
+| `scanners/frames.py` | `FrameStore.write_reference` copies a photo under `targets/<target_id>/`, `remove_reference` tolerates a file already gone |
+| `scanners/reports.py` | `TargetRankingReport` (one line per appearance, best score first, target name on each line), `TargetThreshold` (prints the value with `PLACEHOLDER` while it equals the shipped default), `SearchPersonCommand` (register, then live scan, then search and print), `ForgetTargetCommand`, and the target line of `PersonReport` |
+| `main.py` | `search` becomes a group with `appearance` and `person`; `TargetFactory` and `SearchParser` build both; `UsageError` and `_USAGE_EXIT = 2` carry a wrong command line that argparse cannot catch |
+| `scanners/config.py`, `config.yaml.example` | `person_search.match_threshold`, default `0.5`, commented as a placeholder |
+
+Commands, as the contract now states them:
+
+```text
+main.py search appearance [--person-id N] [--camera-id N] [--since TS] [--until TS]
+main.py search person --image PATH [--image PATH ...] --name NAME [--camera-id N] [--since TS] [--until TS] [--live]
+main.py search person --target-id N [--live] [filters]
+main.py search person --forget N
+```
+
+### The feature, as measured on the lab
+
+Gate at the tip of the branch:
+
+```console
+$ uv run ruff check .
+All checks passed!
+$ uv run pytest -q
+180 passed in 12.09s
+```
+
+Migration round trip on the lab Postgres (host port 5440, database `cameras`):
+
+```console
+INFO  [alembic.runtime.migration] Running upgrade 0002 -> 0003, add target, target_photo and target_hit for the named person search
+INFO  [alembic.runtime.migration] Running downgrade 0003 -> 0002, add target, target_photo and target_hit for the named person search
+0                      # tables present after the downgrade
+target
+target_hit
+target_photo          # after the second upgrade
+```
+
+Registration and search, photo taken from a stored frame:
+
+```text
+score 0.989  target maria  person 1  camera 127.0.0.1:8554  2026-11-11T15:57:31Z  frame 232/20261111T155731Z-rtsp.jpg
+```
+
+`select count(*) from target_hit` answered `22`, `22`, `22` on three consecutive runs, so the
+second run neither duplicated nor dropped hits.
+
+Photo with no face:
+
+```text
+exit=1     # and select id,name from target still listed only the earlier target
+```
+
+The label rule: person 1 had an empty label and gained `maria`; person 2 already carried
+`joao` and kept it. `report faces` prints the match under the person:
+
+```text
+person 1 (maria)  faces 22  first seen 2026-11-11T15:45:04Z  last seen 2026-11-11T16:42:22Z
+  camera 127.0.0.1:8000  frames 5  frame cve
+  camera 127.0.0.1:8554  frames 17  frame rtsp
+  target maria  score 1.000
+```
+
+The reach gate, with a copy of the config whose `allowed_cidrs` held only `192.168.1.0/24`:
+
+```text
+ERROR 7 of 7 addresses are outside the declared ranges ['192.168.1.0/24']: 201.182.98.13, 170.81.118.23, 201.182.98.4, 179.209.11.209, 187.45.113.192, 127.0.0.1, 127.0.0.1; declare them in targets.allowed_cidrs, or narrow the run with --camera-id
+exit=1
+```
+
+The live pass, narrowed to camera 232:
+
+```text
+INFO Starting the face scan
+INFO Executors: finished the face scan with 6 face(s)
+34|faces|127.0.0.1|2026-11-12 11:06:48.526974+00      # scan_run
+```
+
+Removal:
+
+```text
+removed target 3 (maria): 1 photos, 28 hits
+target=0  target_photo=0  target_hit=0  face=30       # face count unchanged
+```
+
+Threshold measurement is blocked, the pair set does not exist:
+
+```text
+ERROR the pair set lab/faces is not a directory
+exit=1
+```
+
+### Two defects the lab run found, and the fix
+
+1. **`report faces` printed no target line.** `TaskFactory._report_deps` built `ReportDeps`
+   without `targets`, so the dictionary stayed empty and `PersonReport` had nothing to print.
+   The builder now fills it from `TargetReader().matches_of(...)` (`main.py:141`).
+2. **The name the run had just written did not show on that run.** `StoredFace.label` was read
+   from the database before `name_if_empty` wrote the label, so the first search printed
+   `person 1` and only the second printed `person 1 (maria)`. `TargetSearch._kept` now rebuilds
+   the face with `replace(face, label=name)` when the write happened
+   (`scanners/target_search.py:185`), and `tests/test_target_label.py` pins it.
+
+### Traps a future agent will hit
+
+1. **`search` is a group now.** `main.py search --since 2026-11-11T00:00:00Z` exits 2, because
+   the option belongs to the subcommand. It is `search appearance --since ...`. Every old
+   command line in the previous section keeps working only after that rename.
+2. **Target ids are not reused.** The sequence keeps counting after a removal: after
+   `--forget 1` and `--forget 2` the next registration got id 3, so a runbook line with
+   `--target-id 1` answers `ERROR no target with id 1`. Read the id from the registration or
+   from `select id, name from target`.
+3. **`--forget` with any search option exits 2**, through `UsageError`, not through argparse.
+   The message is `--forget removes one target and takes no search options`.
+4. **The multi-face refusal is by detector count, not by database count.** A frame the
+   database lists three faces for passed registration as one target, because insightface found
+   one face in the whole image. Only unit tests cover the more-than-one branch.
+5. **Removal leaves the empty directory.** `logs/frames/targets/<id>/` stays after the files
+   go. Harmless, and it makes an `ls` look like the removal half ran.
+6. **The ranking prints one line per face row.** The lab database holds the same frame twice
+   from two scan runs, so the same appearance prints twice. Deduplication is a data problem,
+   not a search problem.
+7. **The threshold key is `person_search.match_threshold`.** Decision D51 wrote
+   `target.match_threshold`; the config section, the example and the contract all say
+   `person_search`. Follow the code.
+8. **The task list named a file that does not exist.** T028 asked for `scanners/target_task.py`;
+   the command lives in `scanners/reports.py` as `SearchPersonCommand`, and `tasks.md` was
+   updated to say so.
+9. **`config.yaml` holds a live Shodan key and is gitignored.** Never stage it. `.claude/`
+   is still untracked and still not in `.gitignore`.
+
+### What is not proved
+
+- **The threshold has never been measured.** `measure threshold --pairs lab/faces` failed
+  because the pair set is not there, so `0.5` ships as a declared placeholder (D60) and every
+  line about it says `PLACEHOLDER`.
+- **The more-than-one-face refusal was never exercised on a real photo**, for the reason in
+  trap 4.
+- **Scale.** The comparison is a linear scan over every stored face, once per target photo,
+  marked with a `ponytail:` comment naming pgvector as the upgrade path. The lab holds 30
+  faces; nothing here proves behaviour at thousands.
+- **Image formats.** Only the jpg the lab stores was read. Another format depends on what
+  opencv reads.
+- **A second real person.** The lab holds two person rows, and both targets registered during
+  this session matched person 1 only, so nothing here separates one target from an unrelated
+  face in production data.
+
+### Next steps
+
+1. Merge [PR #13](https://github.com/iklobato/shodan_rtsp/pull/13). `main` requires one
+   approving review and no reviewer exists, so it is `gh pr merge 13 --merge --admin` once the
+   ci check is green (see the trap in the previous section).
+2. Build a labelled pair set (one folder per identity, two or more photos each), run
+   `measure threshold`, and write the measured value into `person_search.match_threshold` so
+   the output stops saying `PLACEHOLDER`.
+3. Register a target from a real group photo to prove the more-than-one-face refusal through
+   the command line, not only through the test.
+4. Decide what to do with the duplicate face rows the lab database carries, since they double
+   every ranking line.
+5. Add `.claude/` to `.gitignore`, or drop the directory from the working tree.
+
+### What to watch
+
+- **Hit table growth.** One row per target and face, so a target matched by many faces grows
+  with the face table. `select count(*), target_id from target_hit group by 2` is the check.
+- **A silent threshold change.** Anyone who edits `person_search.match_threshold` to the
+  shipped `0.5` by accident turns the `PLACEHOLDER` warning back on, and a value near 1.0
+  hides every hit. Both look like an empty search.
+- **The target ids drifting.** They never reset, so scripts and runbooks that hardcode an id
+  rot on the first removal.
+- **The `search` rename reaching old runbooks.** Any document still printing `main.py search
+  --since` now exits 2 instead of answering.
+
 
 
