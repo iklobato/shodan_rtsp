@@ -52,6 +52,13 @@ face:
   match_threshold: 0.5
   pairs_path: lab/faces       # labelled pair set `measure threshold` reads by default
 
+person_search:
+  # Cosine similarity a stored face needs to count as the registered target.
+  # A value of its own, not face.match_threshold: grouping asks when two faces
+  # are one person, this asks when a face is the person the operator named.
+  # PLACEHOLDER until it is measured on this data (D51, D60).
+  match_threshold: 0.5
+
 frames:
   # Frames are files on disk and the database holds the path (D17). The layout
   # under this root is <root>/<camera_id>/<timestamp>-<source>.jpg (R8).
