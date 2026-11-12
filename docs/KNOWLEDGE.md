@@ -985,3 +985,96 @@ $ uv run pytest -q
 2. Close the empty `logs/frames/targets/<id>/` directory in `FrameStore.remove_reference`, or
    state that it is deliberate.
 3. Add `.claude/` to `.gitignore`, or drop the directory from the working tree.
+
+## 2026-11-12 (later still): the CVE batch, widened by what NVD actually says
+
+The request was to add at least 100 CVEs that allow a frame to be read. This
+section records the measurement that set the real number, the reads that were
+added, and the ones that were left out on purpose.
+
+### How the number was measured
+
+65 NVD 2.0 `keywordSearch` queries, pulled into three sweeps in `/tmp` (camera
+brands, snapshot and stream phrases, CGI endpoint phrases), gave 1067 unique
+CVEs. Two filters were then applied, both on the English description:
+
+1. the text says the access needs no login, and
+2. the text names a picture or a stream, and
+3. the text or the CPE names a camera, DVR, NVR, webcam, encoder or ONVIF.
+
+```console
+$ python3 /tmp/nvd_camera_frame.py
+unique CVEs pulled: 1067
+camera + open access + media: 41
+```
+
+Of those 41, only 11 name an HTTP path a plain GET can reach. The rest need
+RTSP, a proprietary TCP protocol, Bluetooth, a Wiegand bus, a physical
+presence, or are buffer overflows with no read at all. The batch speaks HTTP
+only, so 11 is the honest ceiling for this change, not 100.
+
+### What was added
+
+`scanners/cve/snapshot_read.py`, three classes over one shared base:
+
+| Class | Paths | CVEs |
+|-------|-------|------|
+| `StaticSnapshotRead` | `/snapshot`, `/snapshot.jpg`, `/jpg/image.jpg`, `/video.mjpg` | CVE-2021-31793, CVE-2021-4469, CVE-2021-47796, CVE-2018-18428, CVE-2018-17559 |
+| `StreamPathRead` | `/live.mjpeg`, `/snapshot.jpg`, `/FC/PT/D` | CVE-2018-25141, CVE-2017-20213 |
+| `CgiImageRead` | `/cgi-bin/get_jpeg?channel=1`, `/cgi-bin/animate.cgi?channel=1` | CVE-2019-25236, CVE-2019-25240, CVE-2017-17101 |
+
+`CVE_BATCH` went from 4 to 7 classes, all of the picture family first, then the
+two file reads, then the ONVIF description.
+
+`brands.yaml` gained the model pairs those CVEs hang on, each one the product an
+NVD record carried: `apexis:apm-h803-mpc`, `nightowlsp:wdb-20`,
+`abus:tvip_10000`, `flir:flir_ax8`, `tp-link:tl-sc3130` (hyphen, not the
+`tplink` the brand entry uses), plus a generic `apexis`, `nightowl`, `abus` and
+`flir` entry for the other models of the same brand.
+
+```console
+$ uv run python -c "... Identifier(BrandBook.load('brands.yaml')) ..."
+APM-H803-MPC camera -> apexis | apm-h803-mpc
+NightOwl WDB-20 doorbell -> nightowlsp | wdb-20
+FLIR AX8 thermal camera -> flir | flir_ax8
+ABUS TVIP 10000 -> abus | tvip_10000
+TL-SC3130 -> tp-link | tl-sc3130
+Apexis camera -> apexis | ip_camera
+```
+
+### Traps
+
+1. **A CVE without a path cannot be covered.** CVE-2024-42531 (Ezviz), the FLIR
+   and Beward RTSP records and the Xiongmai ONVIF record say the stream is
+   open, but the mechanism is an RTSP session, and the batch has no RTSP class.
+   Adding their ids to an HTTP class would claim a proof the class does not
+   produce.
+2. **A class is one attempt for every CVE it covers.** `_try_classes` calls the
+   class once and writes the same outcome onto every finding it opened, so a
+   family of paths and a family of CVEs have to agree. That is why the paths
+   are grouped by family and not by brand.
+3. **Denver answers on a second port.** CVE-2021-4469 and CVE-2021-47796 name
+   port 8001, which only reaches the class when `web_ports` lists it.
+4. **`tp-link` is not `tplink`.** The CPE vendor field is hyphenated, so the
+   brand entry could never reach the model CVEs; a separate model entry is the
+   only way in.
+
+### What is not proved
+
+- **No device was read for any of the 11 CVEs.** The classes were exercised
+  against the loopback stub server, which proves the request shape and the
+  decode, not that a real Apexis or FLIR answers these paths.
+- **The 41 CVE inventory is a keyword search, not an enumeration.** A CVE whose
+  description does not use the words the query used is not in the 1067, so 41
+  is a floor, not a total. No NVD CPE dictionary walk was run for the whole
+  camera space.
+- **The `/ONVIF` path of CVE-2026-50245 (Brickcom) was not added.** It names no
+  readable path and the record carries no CPE, so nothing would match it.
+
+### Next steps
+
+1. An RTSP class would widen the batch from 11 to about 20 of the measured 41,
+   because the remaining ones are unauthenticated RTSP sessions. It needs the
+   capture code `scanners/rtsp_probe.py` already has.
+2. A CPE dictionary walk over the camera vendors would replace the keyword
+   floor with a total, at one request per product.
