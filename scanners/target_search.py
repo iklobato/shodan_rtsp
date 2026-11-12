@@ -206,6 +206,36 @@ class TargetSearch:
         )
 
 
+class TargetSelection:
+    """The target one argument names: by name first, by id second (D79).
+
+    A target is named by what the operator remembers, and the name is the
+    identity key of the table, so the name wins. A numeric argument is read as
+    an id only when no target carries that exact name.
+    """
+
+    def __init__(self, targets: TargetRepository) -> None:
+        self._targets = targets
+
+    def id_of(self, argument: str) -> int:
+        """The id of the target that argument names, refused when none does."""
+        wanted = argument.strip()
+        named = self._targets.find_by_name(wanted)
+        if named is not None:
+            return named.id
+        numbered = self._numbered(wanted)
+        if numbered is not None:
+            return numbered
+        raise UnknownTargetError(f"no target named or numbered {wanted}")
+
+    def _numbered(self, argument: str) -> int | None:
+        """The id a digit only argument carries, when a target holds it."""
+        if not argument.isdigit():
+            return None
+        found = self._targets.find_by_id(int(argument))
+        return None if found is None else found.id
+
+
 @dataclass(frozen=True)
 class RemovalDeps:
     """What a removal deletes from: the target table, the files, the labels."""

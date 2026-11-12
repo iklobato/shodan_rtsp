@@ -9,6 +9,7 @@ import logging
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Query, Session
@@ -708,6 +709,16 @@ class RemovedTarget:
     hits: int
 
 
+@dataclass(frozen=True)
+class TargetListing:
+    """One registered target, as `target list` prints it (D80)."""
+
+    target_id: int
+    name: str
+    photos: int
+    hits: int
+
+
 class TargetRepository:
     """The target table and the photo rows that belong to it (D55, D57)."""
 
@@ -787,6 +798,49 @@ class TargetRepository:
         hits = session.query(TargetHit).filter(TargetHit.target_id == target_id).delete()
         session.query(TargetPhoto).filter(TargetPhoto.target_id == target_id).delete()
         return hits
+
+    def _scope(self) -> AbstractContextManager[Session]:
+        """The injected database, or the process-wide one."""
+        return (self._database or default_database()).session_scope()
+
+
+class TargetListReader:
+    """What `target list` reads: every target with its two counts (D80).
+
+    Three grouped queries and not one per target, so a table of ten targets
+    costs the same as a table of one.
+    """
+
+    def __init__(self, database: Database | None = None) -> None:
+        self._database = database
+
+    def rows(self) -> list[TargetListing]:
+        """Every registered target, lowest id first, with its photos and hits."""
+        with self._scope() as session:
+            photos = self._grouped_in(session, TargetPhoto.target_id)
+            hits = self._grouped_in(session, TargetHit.target_id)
+            return [self._row_of(target, photos, hits) for target in self._all_in(session)]
+
+    @classmethod
+    def _grouped_in(cls, session: Session, column: Any) -> dict[int, int]:
+        """How many rows each target owns in that table, in one query."""
+        rows = session.query(column, func.count()).group_by(column).all()
+        return {row[0]: row[1] for row in rows}
+
+    @classmethod
+    def _all_in(cls, session: Session) -> list[Target]:
+        return session.query(Target).order_by(Target.id).all()
+
+    @classmethod
+    def _row_of(
+        cls, target: Target, photos: dict[int, int], hits: dict[int, int]
+    ) -> TargetListing:
+        return TargetListing(
+            target_id=target.id,
+            name=target.name,
+            photos=photos.get(target.id, 0),
+            hits=hits.get(target.id, 0),
+        )
 
     def _scope(self) -> AbstractContextManager[Session]:
         """The injected database, or the process-wide one."""

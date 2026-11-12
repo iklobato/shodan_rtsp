@@ -13,7 +13,7 @@ cp config.yaml.example config.yaml
 | Key | Example | What it does |
 |-----|---------|--------------|
 | `targets.allowed_cidrs` | `["192.168.1.0/24"]` | **the authorization**. Empty authorizes nothing |
-| `nmap.ip_range` | `192.168.1.0/24` | default target of `scan nmap` |
+| `nmap.ip_range` | `192.168.1.0/24` | default target of `find nmap` |
 | `nmap.ports` | `[554, 80, 443, 8000, 8080, 8554, 34567]` | RTSP plus the web and ONVIF ports of D15 |
 | `nmap.xml_path` | `logs/nmap.xml` | raw XML of the sweep, the record of what nmap saw |
 | `frames.root_path` | `logs/frames` | where frame files land |
@@ -28,14 +28,14 @@ cp config.yaml.example config.yaml
 | Key | Default in example | What it does |
 |-----|--------------------|--------------|
 | `shodan.api_key` | placeholder | Shodan API key |
-| `shodan.query` | `net:203.0.113.0/24 screenshot.label:webcam,cam` | Shodan query for `scan shodan` |
+| `shodan.query` | `net:203.0.113.0/24 screenshot.label:webcam,cam` | Shodan query for `find shodan` |
 | `targets.allowed_cidrs` | `["203.0.113.0/24"]` | the one list of what this scanner may reach |
 | `checkers.wordlist_users` | `wordlists/users_small.txt` | usernames, one per line |
 | `checkers.wordlist_passwords` | `wordlists/passwords_small.txt` | passwords, one per line; a blank line means no password |
 | `checkers.wordlist_rtsp_urls` | `wordlists/rtsp_urls_small.txt` | URL templates, one per line |
 | `checkers.randomize` | `true` | shuffle the credential combinations |
 | `checkers.concurrency` | `1` | parallel RTSP probes |
-| `nmap.ip_range` | `192.168.1.0/24` | range `scan nmap` sweeps when no target is given |
+| `nmap.ip_range` | `192.168.1.0/24` | range `find nmap` sweeps when no target is given |
 | `nmap.ports` | `[554, 80, 443, 8000, 8080, 8554, 34567]` | ports of the sweep |
 | `nmap.parallelism` | `0` | `0` keeps nmap defaults, `> 0` adds `-T4 --min-parallelism N` |
 | `nmap.xml_path` | `logs/nmap.xml` | raw XML of the sweep |
@@ -64,7 +64,7 @@ cp config.yaml.example config.yaml
 | `targets.allowed_cidrs` | The authorization, written once. It guards the Shodan query and every command that reaches a stored camera. A run narrowed with `--camera-id N` reaches the camera the operator named, which is the authorization itself, so it is not gated |
 | `face.match_threshold` | A minimum cosine similarity over the L2-normalized 512-d embedding: higher means more alike, 1.0 is the same direction (D44) |
 | `checkers.concurrency` | Probes are I/O-bound. Raise gradually and watch the error rate |
-| `nmap.xml_path` | Where a sweep writes its XML. `scan cve` does not read it: it matches what the scan stored (D30) |
+| `nmap.xml_path` | Where a sweep writes its XML. `scan vulns` does not read it: it matches what the scan stored (D30) |
 
 The config is validated on load (`scanners/config.py`): a missing section fails
 fast with a clear error. `config.yaml` holds secrets and is never committed. Only

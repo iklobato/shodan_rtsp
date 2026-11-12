@@ -1,7 +1,7 @@
 # Contract: command line surface of Person Search
 
 **Feature**: `specs/002-person-search/spec.md` (FR-005 to FR-022, FR-025)
-**Decisions**: D52, D55, D61, D64, D65
+**Decisions**: D52, D55, D61, D64, D65; the surface of 2026-11-12 is D68 to D83
 **Created**: 2026-11-12
 
 This file extends the command surface documented in
@@ -15,7 +15,8 @@ stops being one command and becomes a group with two.
 python main.py [--config PATH] [-v] <group> <command> [options]
 ```
 
-Unchanged, including the exit codes:
+Unchanged, including the exit codes. `--config` and `-v` are read anywhere on the line,
+before the group or after the command (D71):
 
 | Code | Meaning |
 |------|---------|
@@ -27,9 +28,66 @@ Unchanged, including the exit codes:
 
 ```text
 search
-├── person      search for a named target, or remove one
+├── person      search a registered target
 └── appearance  who appeared, where and when (the command of the previous batch)
 ```
+
+Registration and removal are not part of this group (D76). They live in `target`, which is
+the third group this batch adds:
+
+```text
+target
+├── add     register a name with its reference photos
+├── list    every registered target with its photo and hit counts
+└── remove  drop a target with its photos, hits and the label it wrote
+```
+
+### `target add --name NAME --image PATH [--image PATH ...]`
+
+Registers the name if it is new, adds the photos if the name exists (D55, D78). It searches
+nothing, so it never writes a hit.
+
+| | |
+|---|---|
+| `--name NAME` | required. Trimmed, non-empty, unique (D55) |
+| `--image PATH` | required at least once. Repeatable. The file must exist and hold exactly one detectable face |
+| writes | `target`, `target_photo`, one file per photo under `frames.root_path` |
+| network egress | none |
+
+```text
+target 4 (maria): 1 reference photos
+```
+
+### `target list`
+
+Every registered target, lowest id first, with the two counts an operator needs to decide
+what to remove or to trust (D80). Reads only.
+
+```text
+target 4  maria  2 reference photos  28 hits
+```
+
+The counts come from one grouped query per table, never one per target. With no target
+stored it prints `no target registered` and exits 0.
+
+### `target remove NAME or ID`
+
+Removes the target, its photos and their files, and its hits, then clears the person label
+only where it equals the target name (D64). The argument is a name first: a name that
+matches exactly wins, and a digits only argument is read as an id when no target carries
+that name (D79).
+
+| | |
+|---|---|
+| `NAME or ID` | required. The target name, or its id in the table |
+| writes | deletes `target`, `target_photo`, `target_hit`; sets `person.label` to null where it equals the name |
+| network egress | none |
+
+```text
+removed target 4 (maria): 2 photos, 28 hits
+```
+
+A name and a number that both match nothing exit 1 with the argument named.
 
 `search appearance` takes the four flags the old `search` took, with the same meaning:
 `--person-id`, `--camera-id`, `--since`, `--until`. Nothing else about it changes.
@@ -37,7 +95,8 @@ search
 ### `search person --image PATH [--image PATH ...] --name NAME`
 
 Registers the target if the name is new, adds the photos if the name exists, searches the
-stored faces, writes the hits, and prints the ranking.
+stored faces, writes the hits, and prints the ranking. `--image` is a shortcut: the same
+registration is reachable on its own through `target add` (D75).
 
 | | |
 |---|---|
@@ -79,20 +138,12 @@ with no target prints `no appearance matched any target (threshold <value>)` and
 the same line a run that found nothing prints, because the two look the same to the
 operator.
 
-### `search person --forget N`
+### Gone since 2026-11-12: `search person --forget N`
 
-Removes the target, its photos and its files, and its hits, then clears the person label
-only where it equals the target name (D64). Prints one line naming what was removed.
-
-| | |
-|---|---|
-| `--forget N` | required. The target id |
-| writes | deletes `target`, `target_photo`, `target_hit`; sets `person.label` to null where it equals the name |
-| network egress | none |
-
-`--forget` cannot be combined with `--image`, `--target-id`, `--live`, `--camera-id`,
-`--since` or `--until`. Combining them exits 2, through the same refusal path the other
-wrong command lines take.
+Removal is `target remove` (D76). The flag is gone, not aliased: `search person --forget 1`
+now stops at argparse with exit 2, because the command line names an option that does not
+exist. The refusal for combining a removal with search options disappeared with it, since
+no command mixes the two any more.
 
 ## What `--live` runs
 

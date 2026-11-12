@@ -82,7 +82,7 @@ published on the host at 5440.
 | `-e DATABASE_HOST=...` | the address the container reaches the database at (see below) |
 | `-v shodan_logs:/app/logs` | the log and the frames outlive the container |
 | `-v shodan_face_models:/home/scanner/.insightface` | `buffalo_l` downloads once, not once per run |
-| `-v "$PWD/nvdcve-2.0.json:/app/nvdcve-2.0.json:ro"` | the NVD feed is not in the repository, so `scan cve` needs it mounted |
+| `-v "$PWD/nvdcve-2.0.json:/app/nvdcve-2.0.json:ro"` | the NVD feed is not in the repository, so `scan vulns` needs it mounted |
 
 `DATABASE_HOST` overrides `database.host` of the config file, because that is the
 one value that differs between a run on the host and a run in a container
@@ -93,7 +93,7 @@ A command that reaches a device needs the same gate as always, and the range in
 the mounted config is the one that decides:
 
 ```console
-$ docker run --rm -v "$PWD/config.yaml:/app/config.yaml:ro" shodan-rtsp:0.1.0 scan shodan 'country:NL'
+$ docker run --rm -v "$PWD/config.yaml:/app/config.yaml:ro" shodan-rtsp:0.1.0 find shodan 'country:NL'
 2026-11-11 17:22:07,553 ERROR the query names no `net:` range, so it reaches the whole index; declare the range the scan may reach in the query itself
 $ echo $?
 1
@@ -107,7 +107,7 @@ row in the database the config names:
 ```console
 $ docker run --rm -v "$PWD/config.yaml:/app/config.yaml:ro" \
   -e DATABASE_HOST=host.docker.internal:5440 \
-  shodan-rtsp:0.1.0 scan nmap 127.0.0.1/32
+  shodan-rtsp:0.1.0 find nmap 127.0.0.1/32
 2026-11-11 17:25:11,905 INFO Starting nmap scanning on 127.0.0.1/32
 2026-11-11 17:25:12,696 INFO Found 1 hosts using nmap scan
 2026-11-11 17:25:12,696 INFO nmap XML written to logs/nmap.xml
@@ -177,7 +177,7 @@ which gives up the non-root default:
 
 ```bash
 docker run --rm --user root -v "$PWD/config.yaml:/app/config.yaml:ro" \
-  shodan-rtsp:0.1.0 scan nmap 192.168.1.0/24
+  shodan-rtsp:0.1.0 find nmap 192.168.1.0/24
 ```
 
 The scanner itself never asks nmap for those types, so the default non-root run

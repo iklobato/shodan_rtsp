@@ -791,3 +791,197 @@ exit=1
 
 
 
+
+
+## 2026-11-12 (later): the command surface, cut in six grill rounds
+
+Six grill rounds on the same day turned the developer experience of this repository into
+D68 to D83 (`docs/decisions/2026-11-12-simplificacao-cli.md`). Three things changed and
+nothing else: the command surface, the setup text, and the shape of `main.py`. No pipeline
+behaviour moved, no table changed, no migration was added. The work sits on branch
+`002-person-search`, on top of the named person search, because
+[PR #13](https://github.com/iklobato/shodan_rtsp/pull/13) is still open, and D83 ships the
+whole batch as one pull request.
+
+### What the surface was, and what it is now
+
+Measured before the edits and after them:
+
+| Fact | Before | After |
+|------|--------|-------|
+| Groups | 4: `scan`, `report`, `search`, `measure` | 6: `find`, `scan`, `report`, `search`, `target`, `measure` |
+| Leaf commands | 9 | 12 |
+| Discovery commands | `scan nmap`, `scan shodan` | `find nmap`, `find shodan` |
+| Credential and CVE commands | `scan check`, `scan cve` | `scan credentials`, `scan vulns` |
+| `search person` flags | 8 (`--image`, `--name`, `--target-id`, `--forget`, `--live`, `--camera-id`, `--since`, `--until`) | 7, `--forget` gone (D76) |
+| Seeing the registered targets | no command at all | `target list` |
+| `--config` and `-v` | read on the root only, before the group | read anywhere on the line (D71) |
+| `main.py` | 578 lines, 4 wiring and argparse classes | 732 lines, 17 classes, 7 of them parsers |
+
+The tree, as the root help prints it:
+
+```console
+$ uv run python main.py --help
+usage: main.py [-h] [--config CONFIG] [-v]
+               {find,scan,report,search,target,measure} ...
+
+Camera Scanner
+
+positional arguments:
+  {find,scan,report,search,target,measure}
+    find                Discovery that stores cameras
+    scan                Scans of the cameras already stored
+    report              Read-only reports
+    search              Searches that only read
+    target              The named people this build looks for
+    measure             Measurements that write nothing
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       Path to the configuration file
+  -v, --verbose         Verbose mode
+```
+
+### Where the change lives
+
+| File | What changed |
+|------|--------------|
+| `main.py` | The tree of D72, one thin parser class per group (`FindParser`, `ScanParser`, `ReportParser`, `SearchParser`, `TargetParser`, `MeasureParser`) over a shared `CommandParser`; `CommonOptions.parent()` builds the parent parser that carries `--config` and `-v` with `default=argparse.SUPPRESS`, so a subparser no longer overwrites the root default; `CommandLine._commands()` maps the 12 command keys and `_REFUSALS` also answers an unknown target; `RegistrationBuilder`, `ReportDepsBuilder.of(filters)`, `ScanFactory`, `ReportFactory`, `SearchFactory` and `TargetFactory` build the commands |
+| `models/managers.py` | `TargetListing` (frozen, the four columns of D80) and `TargetListReader` (`rows()`, one grouped `count(*)` query per table through `_grouped_in`) |
+| `scanners/target_search.py` | `TargetSelection.id_of`: an exact name wins, a digits only argument is the id when no target carries that name |
+| `scanners/reports.py` | `ForgetTargetCommand` deleted; `AddTargetCommand`, `RemoveTargetCommand` and `TargetListingReport` added, each carrying `run = render` so the command line calls the one entry point it knows |
+| `tests/test_cli_surface.py` (new) | 16 accepted command lines, the 5 old ones that must be refused, the dispatch set, `--config` after the command and `-v` before the group both read, the root default surviving |
+| `tests/test_target_listing.py` (new) | Two targets with different counts, so a count that leaks into the other line fails the test |
+| `tests/test_target_selection.py` (new) | A target named `1` beats the id it looks like, an unknown number and an unknown word both refused |
+| `tests/test_cli_exit.py` | `--forget` on the person search is refused, and a `--config` after the command is read |
+| `README.md` | Command names, the regenerated help block, the mermaid graph, the `target` rows, and one copy-paste setup block (D81) |
+| `specs/001-camera-monitoring-pipeline/contracts/cli.md`, `specs/002-person-search/contracts/cli.md`, `specs/002-person-search/quickstart.md` | The renamed headers, the `target` group, and the note that `--forget` stops at argparse now |
+| `docs/configuration.md`, `docs/docker.md`, `docs/cve-matching.md`, `docs/shodan-by-location.md`, `specs/001-camera-monitoring-pipeline/quickstart.md` | The command names in these runbooks, which the rename had left printing commands that exit 2 |
+
+The dated records (`docs/front-*-report.md`, the dated sections of this file,
+`specs/001/.../{plan,tasks,research}.md`, `specs/002/.../{plan,tasks,data-model}.md` and the
+decision files) keep the names of their day on purpose.
+
+### The lab run, raw
+
+Postgres container `shodan_pg` up and healthy, ids from the previous session already burnt
+(the new target got id 5, not 1). The whole round trip, in one run on 2026-11-12:
+
+```console
+$ uv run python main.py target list
+no target registered
+$ uv run python main.py target add --name maria --image logs/frames/231/20261111T154504Z-cve.jpg
+target 5 (maria): 1 reference photos
+$ uv run python main.py target list
+target 5  maria  1 reference photos  0 hits
+$ uv run python main.py search person --name maria
+score 1.000  target maria  person 1 (maria)  camera 127.0.0.1:8000  2026-11-11T15:45:04Z  frame 231/20261111T154504Z-cve.jpg
+score 1.000  target maria  person 1  camera 127.0.0.1:8000  2026-11-11T15:45:04Z  frame 231/20261111T154504Z-cve.jpg
+score 1.000  target maria  person 1  camera 127.0.0.1:8000  2026-11-11T16:42:22Z  frame 231/20261111T164222Z-cve.jpg
+score 0.995  target maria  person 1  camera 127.0.0.1:8000  2026-11-11T15:45:14Z  frame 231/20261111T154514Z-cve.jpg
+...
+score 0.988  target maria  person 1  camera 127.0.0.1:8554  2026-11-11T15:57:46Z  frame 232/20261111T155746Z-rtsp.jpg
+$ uv run python main.py target add --name maria --image logs/frames/231/20261111T145832Z-cve.jpg
+2026-11-12 08:41:25,995 ERROR no face found in the reference photo: logs/frames/231/20261111T145832Z-cve.jpg
+$ uv run python main.py target list
+target 5  maria  1 reference photos  28 hits
+$ uv run python main.py target remove maria
+removed target 5 (maria): 1 photos, 28 hits
+$ uv run python main.py target list
+no target registered
+```
+
+Three things in that block are worth keeping:
+
+- The first line of the search carries `person 1 (maria)` and the 27 lines after it carry
+  `person 1` alone, in one single run. The label row was empty before this run, so the first
+  line is reading the name the run itself wrote. Why the lines after it do not is not
+  investigated here, and the person row was left labelled `maria` until the removal cleared
+  it.
+- A reference photo with no face is refused at `target add` with exit 1 and the target is
+  left holding the one photo it had, so a bad photo cannot damage a good target.
+- The 28 hits are the duplicate face rows the lab database carries, counted once per target
+  photo: the same four timestamps repeat inside the ranking. That is the known duplication of
+  the previous section, not a new one.
+
+The argument positions of D71, and the two refusals, on the same lab:
+
+```console
+$ uv run python main.py -v target list
+2026-11-12 08:39:06,243 INFO Verbose mode enabled
+no target registered
+$ uv run python main.py target list -v
+2026-11-12 08:39:06,243 INFO Verbose mode enabled
+no target registered
+$ uv run python main.py target list --config config.yaml
+no target registered
+$ uv run python main.py target remove maria
+2026-11-12 08:39:09,137 ERROR no target named or numbered maria
+$ uv run python main.py scan check
+usage: main.py scan [-h] [--config CONFIG] [-v] {credentials,vulns,faces} ...
+main.py scan: error: argument command: invalid choice: 'check' (choose from 'credentials', 'vulns', 'faces')
+$ uv run python main.py search person --forget 1
+main.py: error: unrecognized arguments: --forget 1
+```
+
+Both refusals exit 2, which is the wrong command line and not a failure, as the contracts
+state. Twelve leaf commands were checked one by one with `--help` and every one exits 0.
+
+Gate at the tip of the branch:
+
+```console
+$ uv run ruff check .
+All checks passed!
+$ uv run pytest -q
+199 passed in 11.86s
+```
+
+### Traps found while doing it
+
+1. **`parents=` on a subparser overwrites the root default unless the default is
+   `SUPPRESS`.** Adding the parent parser the obvious way made `main.py target list` read a
+   `config` of `None` and a `verbose` of `False`, because the subparser wrote its own values
+   into the shared namespace after the root had parsed. `default=argparse.SUPPRESS` on every
+   parent option, with the real defaults left on the root parser alone, is what keeps the
+   root value when the option is not typed. Checked on Python 3.11.
+2. **`target remove` leaves the empty directory behind.** The reference file goes, the row
+   goes, and `logs/frames/targets/<id>/` stays as an empty directory, so
+   `logs/frames/targets/` survives the last removal. Harmless, and visible in the working
+   tree after every run.
+3. **A report that only defines `render` crashes the command line.** `TargetListingReport`
+   was written without `run = render` and the first real `target list` died with
+   `AttributeError: 'TargetListingReport' object has no attribute 'run'`. The class of bug is
+   now caught by the test calling `.run()`, which is how the CLI calls it.
+4. **A test that seeds two photo rows needs a path unique across the whole table.**
+   `target_photo.path` is unique, so the second target seeded with the same path raised
+   `IntegrityError: UNIQUE constraint failed: target_photo.path`. The seeding helper builds
+   `targets/<id>/<name>-<index>.jpg`.
+5. **The old names fail late, not early.** `scan check` and `search person --forget 1` are
+   refused by argparse with exit 2 and a message that names the wrong argument, so a shell
+   history entry fails fast with a clear line rather than doing something surprising. That is
+   the intended behaviour of D69 with no aliases, and it is the reason the runbooks in
+   `docs/` had to be renamed in the same change.
+
+### What is not proved
+
+- **The five runbook files were renamed by string, not by running them.** `docs/docker.md`
+  and `docs/shodan-by-location.md` are `docker run` examples and Shodan queries; their new
+  command names were checked with `--help` only. No query was sent and no container was
+  rebuilt.
+- **Nothing about the interactive setup.** The README block of D81 was written and read, not
+  executed from a clean checkout.
+- **`target list` at scale.** Two queries, one per table, but nothing proves it on thousands
+  of targets.
+- **The digit only target name.** `target remove 1` reaches the id when no target is named
+  `1`, which is what D79 chose; a target actually named `1` is untested on the lab, only in
+  `tests/test_target_selection.py`.
+
+### Next steps
+
+1. Merge [PR #13](https://github.com/iklobato/shodan_rtsp/pull/13) and
+   [PR #14](https://github.com/iklobato/shodan_rtsp/pull/14), which carries this change and is
+   based on the branch of #13. `main` requires one approving review and no reviewer exists in
+   the history, so both are `gh pr merge <n> --merge --admin` once the ci check is green.
+2. Close the empty `logs/frames/targets/<id>/` directory in `FrameStore.remove_reference`, or
+   state that it is deliberate.
+3. Add `.claude/` to `.gitignore`, or drop the directory from the working tree.
