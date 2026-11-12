@@ -24,7 +24,8 @@ from scanners.config import get_config
 _SCRATCH_DATABASE = "shodan_migration_test"
 _ADMIN_DATABASE = "postgres"
 _VERSION_TABLE = "alembic_version"
-_HEAD = "0002"
+_HEAD = "0003"
+_BEFORE_PERSON_SEARCH = "0002"
 _BEFORE_LEGACY = "0001"
 _BASE = "base"
 _ZERO = 0
@@ -37,6 +38,9 @@ _LEGACY_PREFIX = "unknown: imported from the legacy cam table"
 _EXPECTED_ENUMS = frozenset(
     {"camera_status", "scan_kind", "frame_source", "cve_class", "cve_outcome"}
 )
+_PERSON_SEARCH_TABLES = frozenset({"target", "target_photo", "target_hit"})
+_COUNT_PERSONS = "SELECT count(*) FROM person"
+_INSERT_PERSON = "INSERT INTO person (created_at, updated_at) VALUES (now(), now())"
 _COUNT_CAMERAS = "SELECT count(*) FROM camera"
 _COUNT_OBSERVATIONS = "SELECT count(*) FROM camera_observation"
 _COUNT_RUNS = "SELECT count(*) FROM scan_run"
@@ -132,6 +136,11 @@ class _ScratchDatabase:
         """Run one query against this database, for the assertions."""
         with self._connection(self._name) as connection:
             return list(connection.execute(text(statement)))
+
+    def execute(self, statement: str) -> None:
+        """Run one statement that returns no rows, for the setup of a test."""
+        with self._connection(self._name) as connection:
+            connection.execute(text(statement))
 
     def count(self, statement: str) -> int:
         """The single number a `count(*)` query returns."""
@@ -233,6 +242,22 @@ def test_legacy_migration_rolls_back_and_keeps_the_old_rows(
     assert lab.count(_COUNT_OBSERVATIONS) == _ZERO
     assert lab.count(_COUNT_RUNS) == _ZERO
     assert lab.count(_COUNT_LEGACY) == _TWO
+
+
+def test_person_search_migration_round_trips_without_touching_people(
+    lab: _ScratchDatabase,
+) -> None:
+    """0003 goes up and down again, and the rows it never owned stay put."""
+    command.upgrade(lab.alembic(), _BEFORE_PERSON_SEARCH)
+    lab.execute(_INSERT_PERSON)
+    command.upgrade(lab.alembic(), _HEAD)
+    assert _PERSON_SEARCH_TABLES <= lab.tables()
+    assert lab.count(_COUNT_PERSONS) == 1
+    command.downgrade(lab.alembic(), _BEFORE_PERSON_SEARCH)
+    assert lab.tables().isdisjoint(_PERSON_SEARCH_TABLES)
+    assert lab.count(_COUNT_PERSONS) == 1
+    command.upgrade(lab.alembic(), _HEAD)
+    assert _PERSON_SEARCH_TABLES <= lab.tables()
 
 
 def test_downgrade_base_returns_to_zero_tables(lab: _ScratchDatabase) -> None:

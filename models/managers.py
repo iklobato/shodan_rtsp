@@ -9,6 +9,7 @@ import logging
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Query, Session
@@ -21,6 +22,7 @@ from models.frame import FaceFrame, FrameSource
 from models.observation import CameraObservation
 from models.person import Person
 from models.scan_run import ScanKind, ScanRun
+from models.target import Target, TargetHit, TargetPhoto
 
 # The two statuses that mean a frame exists for the camera: one grabbed over
 # RTSP, one obtained through a CVE (D33). Both are the face scan's queue.
@@ -325,6 +327,33 @@ class PersonRepository:
         with self._scope() as session:
             return self._resolve_in(session, face_ids)
 
+    def name_if_empty(self, person_id: int, name: str) -> bool:
+        """Write the target name as the label, only where the label is null.
+
+        A label an operator typed by hand always wins (D63), which is the one
+        place this repository breaks the rule of D28 that nothing labels itself.
+        True when the write happened, so the caller can log it.
+        """
+        with self._scope() as session:
+            person = session.get(Person, person_id)
+            if person is None or person.label is not None:
+                return False
+            person.label = name
+            return True
+
+    def release_label(self, name: str) -> int:
+        """Clear every label that equals the name of a removed target (D64).
+
+        Only the exact name is cleared, so a label of a person set by hand under
+        another name survives. Returns how many rows were released.
+        """
+        with self._scope() as session:
+            return (
+                session.query(Person)
+                .filter(Person.label == name)
+                .update({Person.label: None})
+            )
+
     def _resolve_in(self, session: Session, face_ids: list[int]) -> Person:
         faces = self._faces_in(session, face_ids)
         found = self._persons_of(session, faces)
@@ -624,6 +653,354 @@ class FaceFrameRepository:
                 .order_by(FaceFrame.captured_at, FaceFrame.id)
                 .all()
             )
+
+    def _scope(self) -> AbstractContextManager[Session]:
+        """The injected database, or the process-wide one."""
+        return (self._database or default_database()).session_scope()
+
+
+@dataclass(frozen=True)
+class StoredFace:
+    """One stored face with the frame it lives in: the comparison input (D47)."""
+
+    face_id: int
+    person_id: int
+    label: str | None
+    embedding: list[float]
+    camera_id: int
+    captured_at: datetime
+    ip: str
+    port: int
+    source: FrameSource
+    path: str
+
+
+@dataclass(frozen=True)
+class RankedAppearance:
+    """One line of the target ranking: where the target was, and how close."""
+
+    score: float
+    target_id: int
+    target_name: str
+    person_id: int
+    label: str | None
+    captured_at: datetime
+    ip: str
+    port: int
+    path: str
+
+
+@dataclass(frozen=True)
+class PersonTargetMatch:
+    """A target one person matches, as the face report prints it (D58)."""
+
+    target_id: int
+    name: str
+    score: float
+
+
+@dataclass(frozen=True)
+class RemovedTarget:
+    """What a removal deleted, so the command can say it out loud (D64)."""
+
+    target_id: int
+    name: str
+    photos: tuple[str, ...]
+    hits: int
+
+
+@dataclass(frozen=True)
+class TargetListing:
+    """One registered target, as `target list` prints it (D80)."""
+
+    target_id: int
+    name: str
+    photos: int
+    hits: int
+
+
+class TargetRepository:
+    """The target table and the photo rows that belong to it (D55, D57)."""
+
+    def __init__(self, database: Database | None = None) -> None:
+        self._database = database
+
+    def find_by_name(self, name: str) -> Target | None:
+        with self._scope() as session:
+            return session.query(Target).filter(Target.name == name).one_or_none()
+
+    def find_by_id(self, target_id: int) -> Target | None:
+        with self._scope() as session:
+            return session.get(Target, target_id)
+
+    def resolve(self, name: str) -> Target:
+        """The target of that name, created when the name is new (D55).
+
+        The name is the identity key, so a repeated registration adds photos to
+        the target that is already there instead of a second one.
+        """
+        with self._scope() as session:
+            found = session.query(Target).filter(Target.name == name).one_or_none()
+            if found is not None:
+                return found
+            target = Target(name=name)
+            session.add(target)
+            session.flush()
+            return target
+
+    def add_photo(self, target_id: int, path: str, embedding: list[float]) -> None:
+        with self._scope() as session:
+            session.add(TargetPhoto(target_id=target_id, path=path, embedding=embedding))
+
+    def photos_of(self, target_id: int) -> list[TargetPhoto]:
+        with self._scope() as session:
+            return (
+                session.query(TargetPhoto)
+                .filter(TargetPhoto.target_id == target_id)
+                .order_by(TargetPhoto.id)
+                .all()
+            )
+
+    def all(self) -> list[Target]:
+        with self._scope() as session:
+            return session.query(Target).order_by(Target.id).all()
+
+    def remove(self, target_id: int) -> RemovedTarget | None:
+        """Drop the target with its hits and photos in one transaction (D54).
+
+        The photo paths come back so the caller deletes the files after the
+        commit: a file orphaned by a failed commit is harmless, a row pointing
+        at a deleted file is not. No face and no frame is touched.
+        """
+        with self._scope() as session:
+            target = session.get(Target, target_id)
+            if target is None:
+                return None
+            removed = RemovedTarget(
+                target_id=target_id,
+                name=target.name,
+                photos=self._paths_in(session, target_id),
+                hits=self._delete_rows(session, target_id),
+            )
+            session.delete(target)
+            return removed
+
+    def _paths_in(self, session: Session, target_id: int) -> tuple[str, ...]:
+        rows = (
+            session.query(TargetPhoto)
+            .filter(TargetPhoto.target_id == target_id)
+            .order_by(TargetPhoto.id)
+            .all()
+        )
+        return tuple(row.path for row in rows)
+
+    def _delete_rows(self, session: Session, target_id: int) -> int:
+        hits = session.query(TargetHit).filter(TargetHit.target_id == target_id).delete()
+        session.query(TargetPhoto).filter(TargetPhoto.target_id == target_id).delete()
+        return hits
+
+    def _scope(self) -> AbstractContextManager[Session]:
+        """The injected database, or the process-wide one."""
+        return (self._database or default_database()).session_scope()
+
+
+class TargetListReader:
+    """What `target list` reads: every target with its two counts (D80).
+
+    Three grouped queries and not one per target, so a table of ten targets
+    costs the same as a table of one.
+    """
+
+    def __init__(self, database: Database | None = None) -> None:
+        self._database = database
+
+    def rows(self) -> list[TargetListing]:
+        """Every registered target, lowest id first, with its photos and hits."""
+        with self._scope() as session:
+            photos = self._grouped_in(session, TargetPhoto.target_id)
+            hits = self._grouped_in(session, TargetHit.target_id)
+            return [self._row_of(target, photos, hits) for target in self._all_in(session)]
+
+    @classmethod
+    def _grouped_in(cls, session: Session, column: Any) -> dict[int, int]:
+        """How many rows each target owns in that table, in one query."""
+        rows = session.query(column, func.count()).group_by(column).all()
+        return {row[0]: row[1] for row in rows}
+
+    @classmethod
+    def _all_in(cls, session: Session) -> list[Target]:
+        return session.query(Target).order_by(Target.id).all()
+
+    @classmethod
+    def _row_of(
+        cls, target: Target, photos: dict[int, int], hits: dict[int, int]
+    ) -> TargetListing:
+        return TargetListing(
+            target_id=target.id,
+            name=target.name,
+            photos=photos.get(target.id, 0),
+            hits=hits.get(target.id, 0),
+        )
+
+    def _scope(self) -> AbstractContextManager[Session]:
+        """The injected database, or the process-wide one."""
+        return (self._database or default_database()).session_scope()
+
+
+class TargetHitRepository:
+    """The hit table: one row per target and face, never two (FR-012, R6)."""
+
+    def __init__(self, database: Database | None = None) -> None:
+        self._database = database
+
+    def record(self, target_id: int, face_id: int, score: float) -> bool:
+        """Store the hit, raising the score only when the new one is higher.
+
+        A later, worse photo cannot lower the evidence that the person is there,
+        and a repeated search cannot grow the table. True when the row changed.
+        """
+        with self._scope() as session:
+            stored = self._stored_in(session, target_id, face_id)
+            if stored is None:
+                session.add(TargetHit(target_id=target_id, face_id=face_id, score=score))
+                return True
+            if score <= stored.score:
+                return False
+            stored.score = score
+            return True
+
+    def count(self) -> int:
+        with self._scope() as session:
+            return session.query(TargetHit).count()
+
+    def count_of(self, target_id: int) -> int:
+        with self._scope() as session:
+            return self._of_target(session, target_id).count()
+
+    def _of_target(self, session: Session, target_id: int) -> Query:
+        return session.query(TargetHit).filter(TargetHit.target_id == target_id)
+
+    def _stored_in(
+        self, session: Session, target_id: int, face_id: int
+    ) -> TargetHit | None:
+        return (
+            session.query(TargetHit)
+            .filter(TargetHit.target_id == target_id, TargetHit.face_id == face_id)
+            .one_or_none()
+        )
+
+    def _scope(self) -> AbstractContextManager[Session]:
+        """The injected database, or the process-wide one."""
+        return (self._database or default_database()).session_scope()
+
+
+class TargetReader:
+    """What the target search and the face report read (D47, D58)."""
+
+    _FACE_COLUMNS = (
+        "face_id",
+        "person_id",
+        "label",
+        "embedding",
+        "camera_id",
+        "captured_at",
+        "ip",
+        "port",
+        "source",
+        "path",
+    )
+
+    def __init__(self, database: Database | None = None) -> None:
+        self._database = database
+
+    def faces(self, filters: AppearanceFilters) -> list[StoredFace]:
+        """Every stored face with its person, camera, time and frame path.
+
+        Only faces the clustering already assigned: a face with no person has
+        nobody to rank, and the ranking line names a person (D50).
+        """
+        with self._scope() as session:
+            rows = self._narrow(self._face_query(session), filters).all()
+        return [self._stored(row) for row in rows]
+
+    def matches_of(
+        self, person_id: int | None = None
+    ) -> dict[int, list[PersonTargetMatch]]:
+        """The targets each person matches, best score first (D58)."""
+        with self._scope() as session:
+            rows = self._match_query(session, person_id).all()
+            return self._grouped(rows)
+
+    def _face_query(self, session: Session) -> Query:
+        return (
+            session.query(
+                Face.id,
+                Face.person_id,
+                Person.label,
+                Face.embedding,
+                FaceFrame.camera_id,
+                FaceFrame.captured_at,
+                Camera.ip,
+                Camera.port,
+                FaceFrame.source,
+                FaceFrame.path,
+            )
+            .join(FaceFrame, Face.frame_id == FaceFrame.id)
+            .join(Person, Face.person_id == Person.id)
+            .join(Camera, FaceFrame.camera_id == Camera.id)
+            .order_by(Face.id)
+        )
+
+    def _narrow(self, query: Query, filters: AppearanceFilters) -> Query:
+        if filters.person_id is not None:
+            query = query.filter(Face.person_id == filters.person_id)
+        if filters.camera_id is not None:
+            query = query.filter(FaceFrame.camera_id == filters.camera_id)
+        if filters.since is not None:
+            query = query.filter(FaceFrame.captured_at >= filters.since)
+        if filters.until is not None:
+            query = query.filter(FaceFrame.captured_at <= filters.until)
+        return query
+
+    def _stored(self, row: tuple) -> StoredFace:
+        row_values = dict(zip(self._FACE_COLUMNS, row))
+        return StoredFace(
+            face_id=row_values["face_id"],
+            person_id=row_values["person_id"],
+            label=row_values["label"],
+            embedding=list(row_values["embedding"]),
+            camera_id=row_values["camera_id"],
+            captured_at=row_values["captured_at"],
+            ip=row_values["ip"],
+            port=row_values["port"],
+            source=row_values["source"],
+            path=row_values["path"],
+        )
+
+    def _match_query(self, session: Session, person_id: int | None) -> Query:
+        query = (
+            session.query(Face.person_id, Target.id, Target.name, TargetHit.score)
+            .join(TargetHit, TargetHit.face_id == Face.id)
+            .join(Target, TargetHit.target_id == Target.id)
+        )
+        if person_id is None:
+            return query
+        return query.filter(Face.person_id == person_id)
+
+    def _grouped(self, rows: list[tuple]) -> dict[int, list[PersonTargetMatch]]:
+        best: dict[int, dict[int, PersonTargetMatch]] = {}
+        for person_id, target_id, name, score in rows:
+            of_person = best.setdefault(person_id, {})
+            if target_id not in of_person or score > of_person[target_id].score:
+                of_person[target_id] = PersonTargetMatch(
+                    target_id=target_id, name=name, score=score
+                )
+        return {person: self._ranked(found) for person, found in best.items()}
+
+    def _ranked(
+        self, found: dict[int, PersonTargetMatch]
+    ) -> list[PersonTargetMatch]:
+        return sorted(found.values(), key=lambda match: match.score, reverse=True)
 
     def _scope(self) -> AbstractContextManager[Session]:
         """The injected database, or the process-wide one."""

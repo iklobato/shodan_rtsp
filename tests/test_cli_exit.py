@@ -16,6 +16,7 @@ _ARGUMENT_EXIT = 2
 _CONFIG_NAME = "config.yaml"
 _MISSING_PAIRS = "no-such-pairs"
 _NOT_A_TIMESTAMP = "yesterday"
+_PHOTO_NAME = "reference.jpg"
 _CONFIG_TEXT = (
     "shodan:\n"
     "  api_key: lab\n"
@@ -32,7 +33,8 @@ _CONFIG_TEXT = (
     "  db: lab\n"
 )
 _THRESHOLD_COMMAND: tuple[str, ...] = ("measure", "threshold")
-_SEARCH_COMMAND: tuple[str, ...] = ("search",)
+_APPEARANCE_COMMAND: tuple[str, ...] = ("search", "appearance")
+_PERSON_COMMAND: tuple[str, ...] = ("search", "person")
 
 
 class Invocation:
@@ -81,7 +83,7 @@ def test_a_since_that_is_not_a_timestamp_exits_one(
         "main.py",
         "--config",
         config,
-        *_SEARCH_COMMAND,
+        *_APPEARANCE_COMMAND,
         "--since",
         _NOT_A_TIMESTAMP,
     )
@@ -98,3 +100,56 @@ def test_a_command_line_without_a_command_exits_two(
     assert (
         Invocation.exit_code_of(monkeypatch, tmp_path, ("main.py",)) == _ARGUMENT_EXIT
     )
+
+
+def test_a_photo_without_a_name_exits_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D66: the name is what a registration is, so a photo alone is refused."""
+    config = Invocation.prepared(tmp_path)
+    argv = (
+        "main.py",
+        "--config",
+        config,
+        *_PERSON_COMMAND,
+        "--image",
+        str(tmp_path / _PHOTO_NAME),
+    )
+
+    assert Invocation.exit_code_of(monkeypatch, tmp_path, argv) == _ARGUMENT_EXIT
+
+
+def test_forget_on_the_person_search_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D76: removal moved to `target remove`, so the old flag names nothing."""
+    config = Invocation.prepared(tmp_path)
+    argv = (
+        "main.py",
+        "--config",
+        config,
+        *_PERSON_COMMAND,
+        "--forget",
+        "1",
+        "--camera-id",
+        "2",
+    )
+
+    assert Invocation.exit_code_of(monkeypatch, tmp_path, argv) == _ARGUMENT_EXIT
+
+
+def test_a_config_after_the_command_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D71: the same run, with the option where it used to be rejected."""
+    config = Invocation.prepared(tmp_path)
+    argv = (
+        "main.py",
+        *_THRESHOLD_COMMAND,
+        "--pairs",
+        str(tmp_path / _MISSING_PAIRS),
+        "--config",
+        config,
+    )
+
+    assert Invocation.exit_code_of(monkeypatch, tmp_path, argv) == _FAILURE_EXIT

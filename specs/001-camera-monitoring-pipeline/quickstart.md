@@ -2,6 +2,9 @@
 
 **Feature**: `specs/001-camera-monitoring-pipeline/spec.md`
 **Created**: 2026-11-11
+**Command names updated**: 2026-11-12 (D68 to D83: `scan nmap` and `scan shodan` moved to
+`find nmap` and `find shodan`, `scan check` became `scan credentials`, `scan cve` became
+`scan vulns`, and `search` became a group whose read command is `search appearance`)
 
 Every command below was checked against this machine on 2026-11-11: `ffmpeg` at
 `/usr/local/bin/ffmpeg`, `mediamtx` v1.11.3 at `/usr/local/bin/mediamtx`, Docker Compose
@@ -45,9 +48,9 @@ Then, in `config.yaml`:
 
 - remove the whole `proxy:` section (D11)
 - set `targets.allowed_cidrs` to the range the scanner may reach, `["127.0.0.1/32"]` for
-  this lab. An empty list authorizes nothing, so a `scan check` over stored cameras is
+  this lab. An empty list authorizes nothing, so a `scan credentials` over stored cameras is
   refused until its addresses are here (D18, FR-001). A run narrowed with
-  `scan check --camera-id N` is not gated: naming the camera is the authorization.
+  `scan credentials --camera-id N` is not gated: naming the camera is the authorization.
 - set `nmap.ip_range` to the lab range
 - set `database.host` to `localhost:5440`
 - add `frames.root_path`, for example `logs/frames`
@@ -93,23 +96,23 @@ recorded failure and the front is blocked, not faked.
 ## 5. Scan
 
 ```bash
-uv run python main.py scan nmap 127.0.0.1/32
-uv run python main.py scan check
-uv run python main.py scan cve
+uv run python main.py find nmap 127.0.0.1/32
+uv run python main.py scan credentials
+uv run python main.py scan vulns
 uv run python main.py scan faces
 ```
 
-`scan cve` exits 0 even when no frame comes back. Read the `cve_finding` rows for the
+`scan vulns` exits 0 even when no frame comes back. Read the `cve_finding` rows for the
 outcome and the reason.
 
 ## 6. Read the result
 
 ```bash
 uv run python main.py report faces
-uv run python main.py search --since 2026-11-11T00:00:00Z
+uv run python main.py search appearance --since 2026-11-11T00:00:00Z
 ```
 
-`search` prints one line per appearance, oldest first. That output is SC-006.
+`search appearance` prints one line per appearance, oldest first. That output is SC-006.
 
 ## 7. Measure the face threshold
 
@@ -130,10 +133,10 @@ and is labelled as one.
 | Check | Command | Expected |
 |-------|---------|----------|
 | Schema from zero | `uv run alembic upgrade head` twice | second run changes nothing |
-| One row per camera per port per run | `uv run python main.py scan nmap 127.0.0.1/32` twice | two `scan_run` rows, the same `camera` rows, two observations per port |
-| Read-only proof | compare the device state before and after `scan cve` | identical |
+| One row per camera per port per run | `uv run python main.py find nmap 127.0.0.1/32` twice | two `scan_run` rows, the same `camera` rows, two observations per port |
+| Read-only proof | compare the device state before and after `scan vulns` | identical |
 | One person, not two | `uv run python main.py scan faces` on a repeated face | one `person` row |
-| No credential in the log | `uv run python main.py -v scan check 2>&1 \| grep -i <the password>` | no match |
+| No credential in the log | `uv run python main.py -v scan credentials 2>&1 \| grep -i <the password>` | no match |
 | Gates | `uv run pytest -q` and `uv run ruff check .` | both pass |
 
 ## 9. Stop

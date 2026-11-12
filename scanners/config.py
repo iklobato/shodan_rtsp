@@ -22,6 +22,10 @@ _WEB_PORTS: tuple[int, ...] = (80, 443, 8000, 8080)
 # the connection and never answers (rtsp_probe._TCP_CAPTURE_OPTIONS), so a CVE
 # read is held to the same bound and the run records the timeout (FR-020).
 _DEFAULT_TIMEOUT_SECONDS = 8.0
+# The verification threshold of a named target search, separate from the
+# grouping threshold of the clustering (D51). PLACEHOLDER: a guess until
+# `measure threshold` runs on this data, so every report says so (D60).
+_DEFAULT_PERSON_MATCH_THRESHOLD = 0.5
 
 
 class ShodanConfig(BaseModel):
@@ -115,6 +119,19 @@ class FramesConfig(BaseModel):
     root_path: str = "logs/frames"
 
 
+class PersonSearchConfig(BaseModel):
+    """How close a stored face has to be to count as the registered target.
+
+    A value of its own, separate from `face.match_threshold`: the grouping
+    threshold answers when two faces are one person, this one answers when a
+    face is the person the operator named (D51).
+    """
+
+    # PLACEHOLDER: not measured on this data (D60). A measured value is written
+    # here by hand after `measure threshold`, and prints without the word.
+    match_threshold: float = _DEFAULT_PERSON_MATCH_THRESHOLD
+
+
 class BrandsConfig(BaseModel):
     """The brand signature data file, so a new brand is a data line (D27)."""
 
@@ -140,6 +157,7 @@ class AppConfig(BaseModel):
     nmap: NmapConfig
     targets: TargetsConfig = Field(default_factory=TargetsConfig)
     face: FaceConfig = Field(default_factory=FaceConfig)
+    person_search: PersonSearchConfig = Field(default_factory=PersonSearchConfig)
     vuln: VulnConfig = Field(default_factory=VulnConfig)
     frames: FramesConfig = Field(default_factory=FramesConfig)
     brands: BrandsConfig = Field(default_factory=BrandsConfig)

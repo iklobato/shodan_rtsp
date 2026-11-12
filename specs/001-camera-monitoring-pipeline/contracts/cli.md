@@ -14,13 +14,14 @@ python main.py [--config PATH] [-v] <group> <command> [options]
 ```
 
 `--config` defaults to `config.yaml` in the working directory. `-v` raises the log level
-from INFO to DEBUG. The `--start_*` flags of the current version are removed, not aliased:
+from INFO to DEBUG. Both are read anywhere on the line: before the group, or after the
+command (D71). The `--start_*` flags of the current version are removed, not aliased:
 the README is rewritten in the same front (FR-032), and a silent alias would keep two
 spellings alive.
 
 ## Commands
 
-### `scan nmap [target]`
+### `find nmap [target]`
 
 Finds cameras on the network, writes one `scan_run`, one `camera` row per address and port
 and one `camera_observation` per port.
@@ -34,9 +35,9 @@ and one `camera_observation` per port.
 There is no gate on this argument (D6 accepted that risk). The `target_set` column of the
 `scan_run` row is what records, after the fact, what the run reached.
 
-### `scan shodan [query]`
+### `find shodan [query]`
 
-Finds cameras through the Shodan API, same writes as `scan nmap`.
+Finds cameras through the Shodan API, same writes as `find nmap`.
 
 | | |
 |---|---|
@@ -49,7 +50,7 @@ that names a range outside the declared list fails before API credit is spent (D
 is a narrowing check, so it does not contradict D6. Shodan does not index private space, so
 this command cannot serve a private lab range (D37).
 
-### `scan check [--camera-id N]`
+### `scan credentials [--camera-id N]`
 
 Tries credentials against the stored cameras and records what worked. Brand specific
 credentials are tried before the generic set (D22, FR-015).
@@ -66,7 +67,7 @@ stops the whole run before any packet leaves, with the outside addresses named (
 D18). A run narrowed with `--camera-id` reaches the camera the operator named, which is
 the authorization itself, so it is not gated.
 
-### `scan cve [--camera-id N]`
+### `scan vulns [--camera-id N]`
 
 Reads the stored observations (D30), matches them against the CVE map, and for each match
 tries the classes in order until one returns a frame (FR-017). Writes one `cve_finding` per
@@ -116,6 +117,17 @@ A person prints as `person <id>`, or as `person <id> (<label>)` when the row car
 
 Answers who appeared, where and when (FR-027, D25). Reads only, from the database, with no
 SQL written by hand.
+
+> Changed in `002-person-search`: this command is now `search appearance`, with the same
+> four flags and the same output. `search` became a group that also holds `search person`.
+> See `specs/002-person-search/contracts/cli.md`.
+>
+> Changed again in `2026-11-12` (D68 to D83): the discovery commands moved out of `scan`
+> into `find` (`find nmap`, `find shodan`), `scan check` became `scan credentials` and
+> `scan cve` became `scan vulns`. `scan faces` and `report faces` keep their names. The
+> `search` group gained nothing else; the target commands live in `target`, documented in
+> `specs/002-person-search/contracts/cli.md`. This file describes the current surface, and
+> the names above are the ones that exist.
 
 ```text
 2026-11-11T09:14:02Z  person 3  camera 192.0.2.10:554  frame rtsp
@@ -171,7 +183,7 @@ cannot form a pair.
 
 | Code | Meaning |
 |------|---------|
-| 0 | the command completed. For `scan cve` and `scan faces` this includes a run that found nothing |
+| 0 | the command completed. For `scan vulns` and `scan faces` this includes a run that found nothing |
 | 1 | a real failure: the config is invalid, the database is unreachable, the target refused every attempt, or a required input file is missing |
 | 2 | the command line is wrong |
 

@@ -8,6 +8,7 @@ sorts by time and says which path produced the frame.
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from shutil import copyfile
 
 import cv2
 import numpy as np
@@ -16,6 +17,7 @@ from models.frame import FrameSource
 
 _EXTENSION = ".jpg"
 _TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"
+_REFERENCE_DIRECTORY = "targets"
 
 
 class FrameWriteFailed(Exception):
@@ -49,6 +51,39 @@ class FrameStore:
             )
         target.write_bytes(encoded.tobytes())
         return StoredFrame(path=str(relative), captured_at=captured_at)
+
+    def write_reference(self, origin: str, target_id: int) -> str:
+        """Copy a reference photo under the root and return its relative path.
+
+        The file is copied, not re-encoded: the bytes the operator gave are the
+        record of the target, and a second lossy pass would change what the
+        detection was run on (R3, D57).
+        """
+        source = Path(origin)
+        if not source.is_file():
+            raise FrameWriteFailed(f"reference photo not found: {origin}")
+        relative = self._free_reference_path(source, target_id)
+        destination = Path(self._root) / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        copyfile(source, destination)
+        return str(relative)
+
+    def remove_reference(self, relative: str) -> bool:
+        """Delete one reference photo, tolerating a file that is already gone."""
+        path = Path(self._root) / relative
+        if not path.is_file():
+            return False
+        path.unlink()
+        return True
+
+    def _free_reference_path(self, source: Path, target_id: int) -> Path:
+        directory = Path(_REFERENCE_DIRECTORY) / str(target_id)
+        relative = directory / source.name
+        suffix = 1
+        while (Path(self._root) / relative).exists():
+            relative = directory / f"{source.stem}-{suffix}{source.suffix}"
+            suffix += 1
+        return relative
 
     def _relative_path(
         self, camera_id: int, source: FrameSource, captured_at: datetime

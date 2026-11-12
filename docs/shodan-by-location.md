@@ -2,20 +2,20 @@
 
 Part of the [Camera Scanner](../README.md) documentation.
 
-Shodan answers where a camera is, not only that it exists. `scan shodan` stores
+Shodan answers where a camera is, not only that it exists. `find shodan` stores
 the place Shodan reports, so a run can be aimed at one country, one city, or one
 block of a network range.
 
 ## The range always comes first
 
-`scan shodan` refuses a query that names no `net:` range, and refuses every
+`find shodan` refuses a query that names no `net:` range, and refuses every
 `net:` range that is not inside `targets.allowed_cidrs`. Both checks run before
 the API call, so a refused query spends no credit (D18).
 
 A query that is only a location, with no range:
 
 ```console
-$ uv run python main.py scan shodan 'country:NL city:"Amsterdam" has_screenshot:true'
+$ uv run python main.py find shodan 'country:NL city:"Amsterdam" has_screenshot:true'
 2026-11-11 14:03:52,768 ERROR the query names no `net:` range, so it reaches the whole index; declare the range the scan may reach in the query itself
 $ echo $?
 1
@@ -24,7 +24,7 @@ $ echo $?
 A query that names a range the config does not declare:
 
 ```console
-$ uv run python main.py scan shodan 'net:203.0.113.0/24 country:NL'
+$ uv run python main.py find shodan 'net:203.0.113.0/24 country:NL'
 2026-11-11 14:03:57,580 ERROR 203.0.113.0/24 is outside the declared ranges ['127.0.0.1/32', '192.168.1.0/24']; declare it in targets.allowed_cidrs
 $ echo $?
 1
@@ -84,15 +84,15 @@ targets:
 Then run the configured query, or type one for this run only:
 
 ```bash
-uv run python main.py scan shodan
-uv run python main.py scan shodan 'net:203.0.113.0/24 city:"Amsterdam" port:554'
+uv run python main.py find shodan
+uv run python main.py find shodan 'net:203.0.113.0/24 city:"Amsterdam" port:554'
 ```
 
 The argument replaces `shodan.query` for that run and nothing else, so the same
 `allowed_cidrs` still guards it. One config per country is one file per country:
 
 ```bash
-uv run python main.py --config lab/nl.yaml scan shodan
+uv run python main.py --config lab/nl.yaml find shodan
 ```
 
 `-v` adds one line per banner, in the formats `scanners/task.py` writes:
@@ -131,7 +131,7 @@ docker compose exec postgres psql -U scanner -d cameras -c \
 
 A stored Shodan result is a public address, so it stays outside a private
 `allowed_cidrs`: reach it with `--camera-id N`, or declare the range before
-`scan check` and `scan cve` run over it.
+`scan credentials` and `scan vulns` run over it.
 
 ## What was not run here
 

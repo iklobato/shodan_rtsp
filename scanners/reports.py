@@ -13,7 +13,7 @@ format, and the format is the one `contracts/cli.md` prints.
 
 import sys
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Protocol
 
@@ -23,13 +23,30 @@ from models.managers import (
     PersonCameraFrames,
     PersonReader,
     PersonSummary,
+    PersonTargetMatch,
+    RankedAppearance,
+    RemovedTarget,
+    TargetListReader,
+    TargetListing,
+    TargetRepository,
 )
+from models.target import Target
+from scanners.config import _DEFAULT_PERSON_MATCH_THRESHOLD
 from scanners.face_recognizer import ThresholdMeasurement
+from scanners.target_search import (
+    TargetRegistration,
+    TargetRemoval,
+    TargetSearch,
+    TargetSelection,
+)
 
 _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 _UTC = timezone.utc
+_SCORE_DECIMALS = 3
 _NO_PERSON = "no person stored"
 _NO_APPEARANCE = "no appearance stored"
+_NO_TARGET_HIT = "no appearance matched"
+_NO_TARGET = "no target registered"
 _FIRST_WIDTH = 1
 
 
@@ -152,6 +169,7 @@ class ReportDeps:
     people: PersonReader
     lines: StdoutLines
     filters: AppearanceFilters = AppearanceFilters()
+    targets: dict[int, list[PersonTargetMatch]] = field(default_factory=dict)
 
 
 class PersonReport:
@@ -171,6 +189,8 @@ class PersonReport:
             self._deps.lines.write(self._headline(summary, widths))
             for camera in summary.cameras:
                 self._deps.lines.write(self._camera_line(camera, widths))
+            for match in self._deps.targets.get(summary.person_id, []):
+                self._deps.lines.write(self._target_line(match))
 
     # The command line calls run() on whatever a group hands back; the mode's own
     # name says what this report does where "run" does not.
@@ -194,6 +214,10 @@ class PersonReport:
             f"  camera {address:<{widths.address}}  "
             f"frames {camera.faces}  frame {paths}"
         )
+
+    def _target_line(self, match: PersonTargetMatch) -> str:
+        """One target this person matched, with the best score of the match."""
+        return f"  target {match.name}  score {match.score:.{_SCORE_DECIMALS}f}"
 
 
 class SearchReport:
@@ -237,3 +261,184 @@ class ThresholdReport:
             self._lines.write(line)
 
     run = render
+
+
+@dataclass(frozen=True)
+class TargetThreshold:
+    """The verification threshold, and whether it is still the shipped guess.
+
+    The shipped value is a placeholder (D60): the search says so beside the
+    number instead of printing a certainty the data does not carry. A value
+    measured by `measure threshold` and written into the config prints plain.
+    """
+
+    value: float
+
+    @property
+    def is_placeholder(self) -> bool:
+        return self.value == _DEFAULT_PERSON_MATCH_THRESHOLD
+
+    def described(self) -> str:
+        if self.is_placeholder:
+            return f"{self.value} PLACEHOLDER"
+        return f"{self.value}"
+
+
+class TargetRankingReport:
+    """`search person`: one line per appearance, best score first (D50)."""
+
+    def __init__(
+        self, lines: StdoutLines, threshold: TargetThreshold, scope: str
+    ) -> None:
+        self._lines = lines
+        self._threshold = threshold
+        self._scope = scope
+
+    def render(self, ranked: list[RankedAppearance]) -> None:
+        """The ranking, or the one line that says nothing matched."""
+        if not ranked:
+            self._lines.write(
+                f"{_NO_TARGET_HIT} {self._scope} "
+                f"(threshold {self._threshold.described()})"
+            )
+            return
+        for appearance in ranked:
+            self._lines.write(self._line(appearance))
+
+    def _line(self, appearance: RankedAppearance) -> str:
+        address = f"{appearance.ip}:{appearance.port}"
+        cell = PersonCell.of(appearance.person_id, appearance.label)
+        return (
+            f"score {appearance.score:.{_SCORE_DECIMALS}f}  "
+            f"target {appearance.target_name}  "
+            f"{cell}  "
+            f"camera {address}  "
+            f"{Stamp.of(appearance.captured_at)}  frame {appearance.path}"
+        )
+
+
+@dataclass(frozen=True)
+class SearchPersonDeps:
+    """What `search person` needs: the registration, the search, the report."""
+
+    registration: TargetRegistration
+    search: TargetSearch
+    report: TargetRankingReport
+    name: str
+    images: tuple[str, ...] = ()
+    live: Runnable | None = None
+
+
+class SearchPersonCommand:
+    """Registers the photos given, then ranks the stored faces (D52)."""
+
+    def __init__(self, deps: SearchPersonDeps) -> None:
+        self._deps = deps
+
+    def render(self) -> None:
+        """The registration and the live scan first, so this run is searched too.
+
+        Without `--live` the live scan is None and no camera is contacted; with
+        it, the scan runs through the face scan path and its own reach gate
+        before a single stored face is compared (D61).
+        """
+        self._register()
+        self._scan_live()
+        self._deps.report.render(self._deps.search.matches())
+
+    run = render
+
+    def _register(self) -> None:
+        """Nothing to register without a photo: a target id is looked up instead."""
+        if not self._deps.images:
+            return
+        self._deps.registration.register(self._deps.name, list(self._deps.images))
+
+    def _scan_live(self) -> None:
+        if self._deps.live is None:
+            return
+        self._deps.live.run()
+
+
+@dataclass(frozen=True)
+class AddTargetDeps:
+    """What `target add` writes through: the registration, the table, the lines."""
+
+    registration: TargetRegistration
+    targets: TargetRepository
+    lines: StdoutLines
+
+
+class AddTargetCommand:
+    """`target add`: registers the photos of one name, then says what it holds (D78)."""
+
+    def __init__(self, deps: AddTargetDeps, name: str, images: tuple[str, ...]) -> None:
+        self._deps = deps
+        self._name = name
+        self._images = images
+
+    def render(self) -> None:
+        target = self._deps.registration.register(self._name, list(self._images))
+        self._deps.lines.write(self._added_line(target))
+
+    run = render
+
+    def _added_line(self, target: Target) -> str:
+        held = len(self._deps.targets.photos_of(target.id))
+        return f"target {target.id} ({target.name}): {held} reference photos"
+
+
+@dataclass(frozen=True)
+class RemoveTargetDeps:
+    """What `target remove` deletes through: the lookup, the removal, the lines."""
+
+    selection: TargetSelection
+    removal: TargetRemoval
+    lines: StdoutLines
+
+
+class RemoveTargetCommand:
+    """`target remove`: resolves the name or the id, then says what went (D76, D79)."""
+
+    def __init__(self, deps: RemoveTargetDeps, argument: str) -> None:
+        self._deps = deps
+        self._argument = argument
+
+    def render(self) -> None:
+        """The resolved id is what the removal takes, so a name needs no table."""
+        target_id = self._deps.selection.id_of(self._argument)
+        self._deps.lines.write(self._removed_line(self._deps.removal.remove(target_id)))
+
+    run = render
+
+    @classmethod
+    def _removed_line(cls, removed: RemovedTarget) -> str:
+        return (
+            f"removed target {removed.target_id} ({removed.name}): "
+            f"{len(removed.photos)} photos, {removed.hits} hits"
+        )
+
+
+class TargetListingReport:
+    """`target list`: one line per registered target, none when there is none (D80)."""
+
+    def __init__(self, listings: TargetListReader, lines: StdoutLines) -> None:
+        self._listings = listings
+        self._lines = lines
+
+    def render(self) -> None:
+        rows = self._listings.rows()
+        if not rows:
+            self._lines.write(_NO_TARGET)
+            return
+        for row in rows:
+            self._lines.write(self._line(row))
+
+    run = render
+
+    @classmethod
+    def _line(cls, row: TargetListing) -> str:
+        return (
+            f"target {row.target_id}  {row.name}  "
+            f"{row.photos} reference photos  {row.hits} hits"
+        )
