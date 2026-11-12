@@ -117,6 +117,10 @@ A person prints as `person <id>`, or as `person <id> (<label>)` when the row car
 Answers who appeared, where and when (FR-027, D25). Reads only, from the database, with no
 SQL written by hand.
 
+> Changed in `002-person-search`: this command is now `search appearance`, with the same
+> four flags and the same output. `search` became a group that also holds `search person`.
+> See `specs/002-person-search/contracts/cli.md`.
+
 ```text
 2026-11-11T09:14:02Z  person 3  camera 192.0.2.10:554  frame rtsp
 2026-11-11T10:20:00Z  person 4  camera 192.0.2.11:80   frame cve

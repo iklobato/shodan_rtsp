@@ -50,7 +50,7 @@ Postgres and the mock camera of `lab/mock_camera.py`. Every command in it exits
 | **Input** | a CIDR you own, plus `config.yaml` |
 | **Output** | Postgres rows, JPEG frames on disk, three read-only reports |
 | **Reaches the network** | `scan nmap`, `scan shodan`, `scan check`, `scan cve`, `scan faces` |
-| **Never reaches the network** | `report faces`, `search`, `measure threshold` |
+| **Never reaches the network** | `report faces`, `search appearance`, `measure threshold`, and `search person` without `--live` |
 | **Writes to a device** | never. One frame read per match, no payload, no config push |
 | **Names a person** | never automatically. A person is an id until a human labels it |
 | **Hard dependency** | Python 3.11, Postgres, `nmap`, `ffmpeg` for RTSP frames |
@@ -100,7 +100,7 @@ positional arguments:
   {scan,report,search,measure}
     scan                Scans that write to the database
     report              Read-only reports
-    search              Who appeared, where and when
+    search              Searches that only read
     measure             Measurements that write nothing
 
 options:
@@ -370,12 +370,15 @@ flowchart LR
 | `scan cve [--camera-id N]` | HTTP, ONVIF, RTSP of stored cameras | `cve_finding`, one proof frame | read one frame per match |
 | `scan faces [--camera-id N]` | stored camera URL, only if no frame | `scan_run`, `face_frame`, `face`, `person` | who is in the frame |
 | `report faces [--person-id N]` | none | nothing | the answer |
-| `search [filters]` | none | nothing | the answer as a timeline |
+| `search appearance [filters]` | none | nothing | the answer as a timeline |
+| `search person` | none, or the stored cameras with `--live` | `target`, `target_photo`, `target_hit` | find one named person |
 | `measure threshold [--pairs P]` | none | nothing, not even the config | [the one number to trust](docs/face-threshold.md) |
 
 `--config` and `-v` come before the group: `main.py --config lab.yaml scan nmap`.
 
 ### `search` filters
+
+They narrow both commands of the group.
 
 | Flag | Takes | Example |
 |------|-------|---------|
@@ -397,7 +400,7 @@ All four combine with AND.
 | `2` | the command line itself is wrong | `main.py scan` with no command |
 
 ```console
-$ uv run python main.py search --since nope
+$ uv run python main.py search appearance --since nope
 2026-11-11 13:52:46,290 ERROR nope is not a timestamp: Invalid isoformat string: 'nope'
 $ echo $?
 1
@@ -437,10 +440,10 @@ person 1  faces 22  first seen ...  last seen ...
 
 `--person-id N` narrows it to one person.
 
-### `search`
+### `search appearance`
 
 ```console
-$ uv run python main.py search --since 2026-11-11T00:00:00Z
+$ uv run python main.py search appearance --since 2026-11-11T00:00:00Z
 2026-11-11T15:45:04Z  person 1  camera 127.0.0.1:8000  frame cve
 2026-11-11T15:45:14Z  person 1  camera 127.0.0.1:8000  frame cve
 2026-11-11T15:45:23Z  person 2  camera 127.0.0.1:8000  frame cve
@@ -451,6 +454,43 @@ $ uv run python main.py search --since 2026-11-11T00:00:00Z
 One line per appearance, oldest first. A person with no label prints as
 `person <id>`, never as a name, because nothing labels a person automatically
 (D28).
+
+### `search person`
+
+Finds one person you already know across the cameras, from a reference photo:
+
+```console
+$ uv run python main.py search person --image maria.jpg --name maria
+score 0.741  target maria  person 3 (maria)  camera 127.0.0.1:8554  2026-11-11T15:52:06Z  frame 12/20261111T155206Z-rtsp.jpg
+```
+
+The photo must hold exactly one face. The name is the identity, so running it
+again with the same name adds a photo instead of a second target. `--name` is
+required with `--image`.
+
+The first line of each run is the score, best first. `--name` also writes that
+name into `person.label`, but only when the label is empty, so a label typed by
+hand always wins. `report faces` then shows the match under the person.
+
+Searches the stored history by default. `--live` scans the stored cameras first,
+under the same `targets.allowed_cidrs` gate `scan faces` uses, and then compares.
+Without the flag nothing touches the network.
+
+`person_search.match_threshold` in the config is a placeholder until it is
+measured on this data, and the empty result line says so:
+
+```console
+$ uv run python main.py search person --target-id 1
+no appearance matched target 1 (threshold 0.5 PLACEHOLDER)
+```
+
+To undo a wrong registration, remove the target. It takes its photos, its files,
+its hits and the label it wrote, and leaves every face and frame alone:
+
+```console
+$ uv run python main.py search person --forget 1
+removed target 1 (maria): 2 photos, 3 hits
+```
 
 ---
 
