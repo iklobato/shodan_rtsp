@@ -19,3 +19,6 @@ Background, the previous batch (the pipeline this feature builds on):
 - `specs/001-camera-monitoring-pipeline/contracts/cli.md`
 - `docs/decisions/2026-11-11-shodan-rtsp-prod-ready.md` — D1 to D46
 <!-- SPECKIT END -->
+
+Current state of the code, by topic: `knowledge/README.md` (index) and `knowledge/cve-batch.md`
+(the CVE batch and its measured ceiling). The session history stays in `docs/KNOWLEDGE.md`.

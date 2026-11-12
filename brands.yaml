@@ -51,6 +51,56 @@ brands:
       - "rtsp://{0}:{1}@{2}:{3}/h264/ch1/main/av_stream"
       - "rtsp://{0}:{1}@{2}:{3}/Streaming/Channels/101"
 
+  # The models whose firmware CPE the unauthenticated snapshot classes cover
+  # (scanners/cve/snapshot_read.py). Each pair is the product NVD hangs the
+  # named CVEs on, so the probe reaches them through the `_firmware` retry.
+  apexis_apm_h803_mpc:
+    match: ["APM-H803"]
+    vendor: apexis
+    product: apm-h803-mpc
+
+  nightowl_wdb_20:
+    match: ["WDB-20"]
+    vendor: nightowlsp
+    product: wdb-20
+
+  abus_tvip_10000:
+    match: ["TVIP 10000", "TVIP-10000"]
+    vendor: abus
+    product: tvip_10000
+
+  flir_ax8:
+    match: ["FLIR AX8", "AX8"]
+    vendor: flir
+    product: flir_ax8
+
+  apexis:
+    match: ["Apexis"]
+    vendor: apexis
+    product: ip_camera
+
+  nightowl:
+    match: ["NightOwl"]
+    vendor: nightowlsp
+    product: ip_camera
+
+  abus:
+    match: ["ABUS"]
+    vendor: abus
+    product: ip_camera
+
+  flir:
+    match: ["FLIR"]
+    vendor: flir
+    product: ip_camera
+
+  # Above the tplink brand entry on purpose: NVD spells this vendor with a
+  # hyphen, and the brand entry cannot reach the model CVEs.
+  tplink_tl_sc3130:
+    match: ["TL-SC3130"]
+    vendor: tp-link
+    product: tl-sc3130
+
   hikvision:
     match: ["Hikvision-IP", "Hikvision", "IpCamera$"]
     vendor: hikvision

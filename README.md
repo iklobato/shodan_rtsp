@@ -228,6 +228,11 @@ Exit 0 even when no frame comes back: a recorded absence is a successful run, no
 The `cve_finding` rows carry the outcome and the reason. The rest of the feed build and the
 CPE map is in [CVE matching](docs/cve-matching.md).
 
+The batch covers 14 CVEs over 7 classes: the Hikvision snapshot, three snapshot path families
+(`/snapshot`, motion-JPEG, CGI image), two file reads and one ONVIF description. Only 5 of the
+14 match through an NVD feed, because the other 6 records carry no CPE. The measured limit of
+this approach, and the reads behind it, are in [the CVE batch note](knowledge/cve-batch.md).
+
 ### 4. Faces into people
 
 ```console
@@ -637,7 +642,9 @@ h264,238,278
 
 The mock is not vendor firmware. It answers the snapshot path with a JPEG, 404 to everything
 else, and sends `Server: Hikvision-Webs/DS-2CD2032-I` so a real `nmap -sV` names the brand
-and model. [`docs/front-4-rig.md`](docs/front-4-rig.md) records what that leaves unproved.
+and model. To exercise one of the other path families, point the run at a device that serves
+`/snapshot`, `/video.mjpg` or `/cgi-bin/get_jpeg`; the mock answers only the Hikvision path.
+[`docs/front-4-rig.md`](docs/front-4-rig.md) records what that leaves unproved.
 
 ---
 
@@ -721,6 +728,7 @@ settings and keys live in one git-ignored `config.yaml`; start from
 | [`specs/001-camera-monitoring-pipeline/`](specs/001-camera-monitoring-pipeline/) | spec, plan, research (R1 to R11), data model, CLI contract, lab runbook |
 | [`specs/002-person-search/`](specs/002-person-search/) | spec, plan, research (R1 to R9), data model, CLI contract, runbook |
 | [`docs/KNOWLEDGE.md`](docs/KNOWLEDGE.md) | dated session log, newest section first |
+| [`knowledge/`](knowledge/README.md) | the code as it stands, by topic: the CVE batch and its measured limit |
 | [`docs/front-*.md`](docs/front-1-report.md) | what each front proved, with raw output |
 
 ---

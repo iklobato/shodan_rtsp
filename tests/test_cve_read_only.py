@@ -25,7 +25,7 @@ _SNAPSHOT_PATH = "/onvif-http/snapshot"
 _REDIRECTED_PATH = "/elsewhere"
 _SNAPSHOT_CVE = "CVE-2017-7921"
 _FIRST = 0
-_BATCH_CLASSES = 4
+_BATCH_CLASSES = 7
 _ONE_FRAME = 1
 _FRAME_WIDTH = 64
 _FRAME_HEIGHT = 48
@@ -39,6 +39,14 @@ _JPEG_CONTENT_TYPE = "image/jpeg"
 # assertion is equality, so a class that adds a read or changes a path fails.
 _DECLARED_READS: tuple[tuple[str, str], ...] = (
     ("GET", _SNAPSHOT_PATH),
+    ("GET", "/snapshot"),
+    ("GET", "/snapshot.jpg"),
+    ("GET", "/jpg/image.jpg"),
+    ("GET", "/video.mjpg"),
+    ("GET", "/live.mjpeg"),
+    ("GET", "/FC/PT/D"),
+    ("GET", "/cgi-bin/get_jpeg"),
+    ("GET", "/cgi-bin/animate.cgi"),
     ("POST", "/cgi-bin/get_file.php"),
     ("GET", "/common/get_file.php"),
     ("GET", "/check.cgi"),
@@ -46,6 +54,9 @@ _DECLARED_READS: tuple[tuple[str, str], ...] = (
 )
 _ALL_CVES: tuple[str, ...] = (
     _SNAPSHOT_CVE,
+    "CVE-2021-31793",
+    "CVE-2018-25141",
+    "CVE-2019-25236",
     "CVE-2025-34022",
     "CVE-2016-15055",
     "CVE-2025-65856",
@@ -89,7 +100,7 @@ def test_a_form_read_without_its_fields_is_refused() -> None:
 def test_the_whole_batch_only_sends_the_declared_reads(
     lab: CveLab, stub_server: StubServer
 ) -> None:
-    """FR-003: the five declared reads, and nothing else, over a real socket."""
+    """FR-003: the declared reads, and nothing else, over a real socket."""
     lab.read_batch(lab.deps(probe=RecordingProbe(_ALL_CVES)))
     asked = {
         (method, path.partition(_QUERY_SEPARATOR)[0])
@@ -134,3 +145,17 @@ def test_a_real_jpeg_becomes_one_stored_frame(
     assert (lab.root / stored[_FIRST].path).is_file()
     assert lab.outcomes() == [CveOutcome.frame_obtained]
     assert lab.stored_camera().status is CameraStatus.frame_by_cve
+
+
+def test_a_vendor_snapshot_path_yields_the_frame(
+    lab: CveLab, stub_server: StubServer, jpeg: bytes
+) -> None:
+    """The static family reads its own path, and only that class runs."""
+    stub_server.routes["/snapshot"] = StubRoute(
+        status=_OK_STATUS, body=jpeg, content_type=_JPEG_CONTENT_TYPE
+    )
+    lab.read_batch(lab.deps(probe=RecordingProbe(("CVE-2021-31793",))))
+    asked = [path.partition(_QUERY_SEPARATOR)[0] for _method, path in stub_server.asked]
+    assert asked == ["/snapshot"]
+    assert lab.outcomes() == [CveOutcome.frame_obtained]
+    assert len(lab.frame_rows()) == _ONE_FRAME
