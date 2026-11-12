@@ -1008,10 +1008,22 @@ unique CVEs pulled: 1067
 camera + open access + media: 41
 ```
 
-Of those 41, only 11 name an HTTP path a plain GET can reach. The rest need
-RTSP, a proprietary TCP protocol, Bluetooth, a Wiegand bus, a physical
-presence, or are buffer overflows with no read at all. The batch speaks HTTP
-only, so 11 is the honest ceiling for this change, not 100.
+Of those 41, 11 are what this batch claims: 10 read a picture over HTTP and one
+reads an ONVIF description. Another 9 need an RTSP session, 1 named a path that
+was not taken (CVE-2026-50245, `/ONVIF`), and the remaining 20 are another
+mechanism entirely: Bluetooth, a Wiegand bus, a physical presence, a password
+reset, an RCE. The batch speaks HTTP only, so 11 was the honest ceiling for this
+change, not 100.
+
+```console
+$ python3 /tmp/nvd_batch_overlap.py
+of 41, in batch: 11
+of 41, batch read a picture over HTTP: 10
+of 41, batch read an ONVIF description: 1
+named path, not taken: ['CVE-2026-50245']
+need an RTSP session: 9
+another mechanism: 20
+```
 
 ### What was added
 
@@ -1073,8 +1085,10 @@ Apexis camera -> apexis | ip_camera
 
 ### Next steps
 
-1. An RTSP class would widen the batch from 11 to about 20 of the measured 41,
-   because the remaining ones are unauthenticated RTSP sessions. It needs the
-   capture code `scanners/rtsp_probe.py` already has.
+1. An RTSP class would widen the batch from 11 to 20 of the measured 41, because
+   9 of the remaining ones are unauthenticated RTSP sessions. It needs the
+   capture code `scanners/rtsp_probe.py` already has. Only 2 of those 9 records
+   carry a CPE (`rubetek:rv-3406_firmware`, `flir:flir_ax8_firmware`), so the
+   feed would reach 2 of the 9.
 2. A CPE dictionary walk over the camera vendors would replace the keyword
    floor with a total, at one request per product.
