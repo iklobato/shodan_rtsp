@@ -978,9 +978,10 @@ $ uv run pytest -q
 
 ### Next steps
 
-1. Merge [PR #13](https://github.com/iklobato/shodan_rtsp/pull/13) and the pull request that
-   carries this change. `main` requires one approving review and no reviewer exists in the
-   history, so both are `gh pr merge <n> --merge --admin` once the ci check is green.
+1. Merge [PR #13](https://github.com/iklobato/shodan_rtsp/pull/13) and
+   [PR #14](https://github.com/iklobato/shodan_rtsp/pull/14), which carries this change and is
+   based on the branch of #13. `main` requires one approving review and no reviewer exists in
+   the history, so both are `gh pr merge <n> --merge --admin` once the ci check is green.
 2. Close the empty `logs/frames/targets/<id>/` directory in `FrameStore.remove_reference`, or
    state that it is deliberate.
 3. Add `.claude/` to `.gitignore`, or drop the directory from the working tree.
