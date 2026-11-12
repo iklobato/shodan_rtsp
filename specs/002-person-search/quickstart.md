@@ -3,6 +3,8 @@
 **Feature**: `specs/002-person-search/spec.md`
 **Plan**: `specs/002-person-search/plan.md`
 **Created**: 2026-11-12
+**Command names updated**: 2026-11-12 (D68 to D83: groups `find` and `target`, renamed
+`scan credentials` and `scan vulns`, `--config` accepted anywhere on the line)
 
 Runbook to prove the feature works on the lab, in order, with the raw output kept for the
 front report (D24). Every command is run by hand; there is no scheduler and no service.
@@ -19,8 +21,8 @@ front report (D24). Every command is run by hand; there is no scheduler and no s
 uv run python main.py report faces
 ```
 
-Expect at least one `person <id>` line. If the report is empty, run `scan nmap`, `scan
-check`, `scan cve` and `scan faces` first, as the previous quickstart says.
+Expect at least one `person <id>` line. If the report is empty, run `find nmap`, `scan
+credentials`, `scan vulns` and `scan faces` first, as the previous quickstart says.
 
 ## Step 1: apply the migration
 
@@ -36,11 +38,18 @@ downgrade. Paste both outputs into the front report.
 ## Step 2: register a target and search the history
 
 ```bash
-uv run python main.py search person --image lab/faces/maria/01.jpg --name maria
+uv run python main.py target add --name maria --image lab/faces/maria/01.jpg
+uv run python main.py target list
+uv run python main.py search person --name maria
 ```
 
-Expect a line per stored appearance, best score first, with `person <id>`, the camera, the
-time, the frame path and the score. Expect no network call in the log.
+Expect `target add` to print the id and the reference photo count, `target list` to print
+that same target with its hits, and the search to print a line per stored appearance, best
+score first, with `person <id>`, the camera, the time, the frame path and the score. Expect
+no network call in the log.
+
+The one command form works too and is the shortcut D75 keeps: `search person --image
+lab/faces/maria/01.jpg --name maria` registers and searches in one run.
 
 ## Step 3: prove the hit is stable
 
@@ -54,7 +63,7 @@ Run the command twice. Expect the count to be identical after the second run.
 ## Step 4: prove a bad photo is refused
 
 ```bash
-uv run python main.py search person --image lab/faces/group.jpg --name group
+uv run python main.py target add --name group --image lab/faces/group.jpg
 ```
 
 With a photo holding two faces, expect exit 1, the reason on stderr, and no new target:
@@ -104,12 +113,17 @@ Expect exit 1, no packet sent, and the outside address named in the message.
 ## Step 8: prove removal
 
 ```bash
-uv run python main.py search person --forget 1
+uv run python main.py target remove maria
+uv run python main.py target list
 psql ... -c "select count(*) from target_hit where target_id = 1;"
 psql ... -c "select count(*) from face;"
 ```
 
-Expect zero target rows and an unchanged face count.
+Expect the removal line to name the target, its photo count and its hit count, then `no
+target registered`, zero hit rows for that target and an unchanged face count.
+
+Run the same removal as `target remove 1` to prove the id form reaches the same target when
+no target carries the name `1`.
 
 ## Step 9: measure the verification threshold
 

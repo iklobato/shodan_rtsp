@@ -12,7 +12,7 @@ the faces into people, and answer who appeared, on which camera, and when.**
 ![Image size](https://img.shields.io/docker/image-size/iklob1/shodan-rtsp/latest)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 
-[Quickstart](#quickstart) · [The seven commands](#the-seven-commands) ·
+[Quickstart](#quickstart) · [The commands](#the-commands) ·
 [Data model](#data-model) · [Troubleshooting](#troubleshooting) ·
 [All docs](#where-the-rest-of-the-documentation-lives)
 
@@ -49,8 +49,8 @@ Postgres and the mock camera of `lab/mock_camera.py`. Every command in it exits
 |---|---|
 | **Input** | a CIDR you own, plus `config.yaml` |
 | **Output** | Postgres rows, JPEG frames on disk, three read-only reports |
-| **Reaches the network** | `scan nmap`, `scan shodan`, `scan check`, `scan cve`, `scan faces` |
-| **Never reaches the network** | `report faces`, `search appearance`, `measure threshold`, and `search person` without `--live` |
+| **Reaches the network** | `find nmap`, `find shodan`, `scan credentials`, `scan vulns`, `scan faces` |
+| **Never reaches the network** | `report faces`, `search appearance`, `target add`, `target list`, `target remove`, `measure threshold`, and `search person` without `--live` |
 | **Writes to a device** | never. One frame read per match, no payload, no config push |
 | **Names a person** | never automatically. A person is an id until a human labels it |
 | **Hard dependency** | Python 3.11, Postgres, `nmap`, `ffmpeg` for RTSP frames |
@@ -60,9 +60,9 @@ Postgres and the mock camera of `lab/mock_camera.py`. Every command in it exits
 
 | Stage | Does | Does not |
 |-------|------|----------|
-| `scan nmap` | sweeps 7 camera ports, stores one row per open port | guess credentials, open a stream |
-| `scan check` | tries `url x user x password`, records what worked, stores one frame | retry a locked device, brute-force outside the wordlist |
-| `scan cve` | matches stored banners against NVD, reads one frame per match | send an exploit, write to the device |
+| `find nmap` | sweeps 7 camera ports, stores one row per open port | guess credentials, open a stream |
+| `scan credentials` | tries `url x user x password`, records what worked, stores one frame | retry a locked device, brute-force outside the wordlist |
+| `scan vulns` | matches stored banners against NVD, reads one frame per match | send an exploit, write to the device |
 | `scan faces` | detects faces, clusters them into people, writes frame files | label a person, keep a face that failed detection |
 | `report` / `search` | print what is stored | touch the network at all |
 
@@ -76,8 +76,17 @@ Postgres and the mock camera of `lab/mock_camera.py`. Every command in it exits
 | 2 | Start Postgres 16 on port 5440 | `docker compose up -d postgres` |
 | 3 | Create the config and edit it | `cp config.yaml.example config.yaml` |
 | 4 | Create the schema | `uv run alembic upgrade head` |
-| 5 | Sweep your lab | `uv run python main.py scan nmap 127.0.0.1/32` |
+| 5 | Sweep your lab | `uv run python main.py find nmap 127.0.0.1/32` |
 | 6 | Read the result | `uv run python main.py report faces` |
+
+Steps 1 to 4 in one paste, which is every step that has to happen once:
+
+```bash
+uv sync                                                 # the virtualenv and the locked deps
+docker compose up -d postgres                           # Postgres 16 on port 5440
+cp config.yaml.example config.yaml                      # then edit the Shodan key and the ranges
+uv run alembic upgrade head                             # the schema; a second run changes nothing
+```
 
 Real terminal, this machine, 2026-11-11:
 
@@ -92,15 +101,18 @@ INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
 0002 (head)
 
 $ uv run python main.py --help
-usage: main.py [-h] [--config CONFIG] [-v] {scan,report,search,measure} ...
+usage: main.py [-h] [--config CONFIG] [-v]
+               {find,scan,report,search,target,measure} ...
 
 Camera Scanner
 
 positional arguments:
-  {scan,report,search,measure}
-    scan                Scans that write to the database
+  {find,scan,report,search,target,measure}
+    find                Discovery that stores cameras
+    scan                Scans of the cameras already stored
     report              Read-only reports
     search              Searches that only read
+    target              The named people this build looks for
     measure             Measurements that write nothing
 
 options:
@@ -126,13 +138,13 @@ sequenceDiagram
     participant DB as Postgres
     participant Disk as frames on disk
 
-    Op->>CLI: scan nmap 192.168.1.0/24
+    Op->>CLI: find nmap 192.168.1.0/24
     CLI->>Gate: is this range authorized?
     Gate-->>CLI: yes
     CLI->>Net: nmap -p 554,80,... -sV
     Net-->>CLI: open ports and banners
     CLI->>DB: scan_run, camera, camera_observation
-    Op->>CLI: scan cve
+    Op->>CLI: scan vulns
     CLI->>DB: read the stored banners
     CLI->>Net: one read-only request per match
     Net-->>CLI: a frame, or nothing
@@ -150,7 +162,7 @@ Every stage in the order an operator runs it, with real output from one lab run.
 ### 1. Sweep
 
 ```console
-$ uv run python main.py scan nmap 192.168.1.0/24
+$ uv run python main.py find nmap 192.168.1.0/24
 2026-11-11 13:47:01,729 INFO Starting nmap scanning on 192.168.1.0/24
 2026-11-11 13:48:01,022 INFO Found 5 hosts using nmap scan
 2026-11-11 13:48:01,024 INFO nmap XML written to logs/nmap.xml
@@ -164,7 +176,7 @@ even when nobody typed the range this time.
 ### 2. The gate, when the range is not authorized
 
 ```console
-$ uv run python main.py scan check
+$ uv run python main.py scan credentials
 2026-11-11 13:39:34,552 INFO Starting check task
 2026-11-11 13:39:34,751 ERROR 224 of 226 addresses are outside the declared ranges
   ['127.0.0.1/32', '192.168.1.0/24']: 190.120.45.220, 189.15.27.223, ...
@@ -174,14 +186,14 @@ $ uv run python main.py scan check
 Nothing was sent. Narrow the run to the camera you named:
 
 ```console
-$ uv run python main.py scan check --camera-id 232
+$ uv run python main.py scan credentials --camera-id 232
 2026-11-11 13:40:34,977 INFO Executors: finished testing cameras
 ```
 
 ### 3. Read one frame through a CVE class
 
 ```console
-$ uv run python main.py -v scan cve --camera-id 231
+$ uv run python main.py -v scan vulns --camera-id 231
 2026-11-11 13:42:21,860 INFO Starting the CVE task
 2026-11-11 13:42:22,175 INFO 127.0.0.1:8000 matches 1 CVE(s)
 2026-11-11 13:42:22,219 INFO CVE read GET http://127.0.0.1:8000/onvif-http/snapshot?auth=...
@@ -332,7 +344,7 @@ everything else, and sends `Server: Hikvision-Webs/DS-2CD2032-I` so a real
 
 ---
 
-## The seven commands
+## The commands
 
 ```bash
 uv run python main.py [--config PATH] [-v] <group> <command> [options]
@@ -341,44 +353,58 @@ uv run python main.py [--config PATH] [-v] <group> <command> [options]
 ```mermaid
 flowchart LR
     subgraph writes
-      N[scan nmap]
-      S[scan shodan]
-      C[scan check]
-      V[scan cve]
+      N[find nmap]
+      S[find shodan]
+      C[scan credentials]
+      V[scan vulns]
       F[scan faces]
     end
     subgraph reads
       R[report faces]
-      Q[search]
+      Q[search appearance / person]
       M[measure threshold]
+    end
+    subgraph targets
+      A[target add]
+      L[target list]
+      X[target remove]
     end
     N --> DB[(Postgres)]
     S --> DB
     C --> DB
     V --> DB
     F --> DB
+    A --> DB
+    X --> DB
     DB --> R
     DB --> Q
+    DB --> L
     P[(pair set on disk)] --> M
 ```
 
 | Command | Reaches network | Writes | One line |
 |---------|-----------------|--------|----------|
-| `scan nmap [CIDR]` | nmap over the range | `scan_run`, `camera`, `camera_observation` | find cameras |
-| `scan shodan [QUERY]` | Shodan API | same as nmap | find cameras without touching them ([by location](docs/shodan-by-location.md)) |
-| `scan check [--camera-id N]` | RTSP port of stored cameras | `camera.url`, `user`, `password`, `status` | get in |
-| `scan cve [--camera-id N]` | HTTP, ONVIF, RTSP of stored cameras | `cve_finding`, one proof frame | read one frame per match |
+| `find nmap [CIDR]` | nmap over the range | `scan_run`, `camera`, `camera_observation` | find cameras |
+| `find shodan [QUERY]` | Shodan API | same as nmap | find cameras without touching them ([by location](docs/shodan-by-location.md)) |
+| `scan credentials [--camera-id N]` | RTSP port of stored cameras | `camera.url`, `user`, `password`, `status` | get in |
+| `scan vulns [--camera-id N]` | HTTP, ONVIF, RTSP of stored cameras | `cve_finding`, one proof frame | read one frame per match |
 | `scan faces [--camera-id N]` | stored camera URL, only if no frame | `scan_run`, `face_frame`, `face`, `person` | who is in the frame |
 | `report faces [--person-id N]` | none | nothing | the answer |
 | `search appearance [filters]` | none | nothing | the answer as a timeline |
-| `search person` | none, or the stored cameras with `--live` | `target`, `target_photo`, `target_hit` | find one named person |
+| `search person [--name X] [--target-id N]` | none, or the stored cameras with `--live` | `target`, `target_photo`, `target_hit`, and the label of a person | find one named person |
+| `target add --name X --image PATH` | none | `target`, `target_photo`, one file per photo | register a person to look for |
+| `target list` | none | nothing | what is registered, with its photo and hit counts |
+| `target remove NAME or ID` | none | deletes `target`, `target_photo`, `target_hit` and its files | undo a registration |
 | `measure threshold [--pairs P]` | none | nothing, not even the config | [the one number to trust](docs/face-threshold.md) |
 
-`--config` and `-v` come before the group: `main.py --config lab.yaml scan nmap`.
+`--config` and `-v` are read anywhere on the line: `main.py --config lab.yaml find nmap`
+and `main.py find nmap --config lab.yaml` are the same run.
 
 ### `search` filters
 
-They narrow both commands of the group.
+`--camera-id`, `--since` and `--until` narrow both commands of the group.
+`--person-id` belongs to `search appearance` alone: the person search selects a
+registered target instead.
 
 | Flag | Takes | Example |
 |------|-------|---------|
@@ -395,7 +421,7 @@ All four combine with AND.
 
 | Code | Meaning | Example |
 |------|---------|---------|
-| `0` | the command completed, including a run that found nothing | `scan cve` with no frame |
+| `0` | the command completed, including a run that found nothing | `scan vulns` with no frame |
 | `1` | a refusal the operator can fix, printed with its reason | target outside the range, unknown camera id, a timestamp that is not one |
 | `2` | the command line itself is wrong | `main.py scan` with no command |
 
@@ -464,9 +490,27 @@ $ uv run python main.py search person --image maria.jpg --name maria
 score 0.741  target maria  person 3 (maria)  camera 127.0.0.1:8554  2026-11-11T15:52:06Z  frame 12/20261111T155206Z-rtsp.jpg
 ```
 
-The photo must hold exactly one face. The name is the identity, so running it
-again with the same name adds a photo instead of a second target. `--name` is
-required with `--image`.
+`--image` is the shortcut that registers the photo and searches in the same run,
+and it needs `--name`. The long way round is `target add`, which only registers:
+
+```console
+$ uv run python main.py target add --name maria --image maria.jpg
+target 4 (maria): 1 reference photos
+$ uv run python main.py target list
+target 4  maria  1 reference photos  28 hits
+$ uv run python main.py search person --name maria
+score 0.988  target maria  person 1  camera 127.0.0.1:8554  2026-11-11T15:57:31Z  frame 232/20261111T155731Z-rtsp.jpg
+```
+
+A reference photo must hold exactly one face, so a group photo is refused. The
+name is the identity: adding a photo to a name that already exists adds to that
+target instead of making a second one. `target remove` undoes a registration, by
+name or by id:
+
+```console
+$ uv run python main.py target remove maria
+removed target 4 (maria): 1 photos, 28 hits
+```
 
 The first line of each run is the score, best first. `--name` also writes that
 name into `person.label`, but only when the label is empty, so a label typed by
@@ -482,14 +526,6 @@ measured on this data, and the empty result line says so:
 ```console
 $ uv run python main.py search person --target-id 1
 no appearance matched target 1 (threshold 0.5 PLACEHOLDER)
-```
-
-To undo a wrong registration, remove the target. It takes its photos, its files,
-its hits and the label it wrote, and leaves every face and frame alone:
-
-```console
-$ uv run python main.py search person --forget 1
-removed target 1 (maria): 2 photos, 3 hits
 ```
 
 ---
@@ -604,7 +640,7 @@ Every row below is a real failure seen while building this, with the real answer
 | devices appear in ARP but every port is `filtered` | MAC is randomized: a phone or laptop with a firewall | not a camera, ignore |
 | ARP shows only the router | guest SSID or client isolation separates the clients | move the camera to the main SSID |
 | camera not in ARP at all | no DHCP lease: it sits on its factory IP, or never associated | try `192.168.1.64` (Hikvision), `192.168.1.108` (Dahua) |
-| `scan check` refuses 224 addresses | stored cameras from an earlier run are outside `allowed_cidrs` | `--camera-id N`, or declare the range |
+| `scan credentials` refuses 224 addresses | stored cameras from an earlier run are outside `allowed_cidrs` | `--camera-id N`, or declare the range |
 | `bind: address already in use` on 5440 | another Postgres holds the port | `docker compose down`, or change `database.host` |
 | `libx264` refuses the frame | odd width or height | `-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2"` |
 | ffmpeg publishes one frame then stops | `-stream_loop -1` does not loop an image input | `-loop 1 -re` |
