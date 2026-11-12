@@ -13,7 +13,8 @@ This folder holds topic files that describe the code as it stands.
   four original classes; `brands.yaml` reaches the model firmware CPEs those CVEs hang on.
 - **Discovered:** the real ceiling for CVE ids this batch can claim is 11, not 100. Measured
   below, in `cve-batch.md`.
-- **Next steps:** an RTSP read class would take the batch from 11 to about 20 of the measured 41.
+- **Next steps:** an RTSP read class covers the 9 measured CVEs whose stream is open over RTSP,
+  taking the batch from 11 to 20; the feed reaches 2 of those 9, because the rest carry no CPE.
 - **What is left:** the 41 CVE inventory is a keyword floor, not an NVD CPE enumeration; no real
   device answered any of the new paths.
 - **Monitor:** whether NVD rewrites a description so a CVE stops naming the path the class reads.
